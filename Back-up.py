@@ -196,7 +196,7 @@ print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
 print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 6")
 print("Condition 2: Least appearing digit must be between 5 and 9")
 print(f"Condition 3: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
-print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print(f"Condition 4:Remember this is backup Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print("=" * 120)
 
 last_trade_time = 0
