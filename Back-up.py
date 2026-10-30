@@ -193,10 +193,10 @@ start_performance_log_listener(driver)
 
 # --- MONITORING LOOP ---
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
-print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 6")
+print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 4")
 print("Condition 2: Least appearing digit must be between 5 and 9")
 print(f"Condition 3: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
-print(f"Condition 4:Remember this is backup Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print("=" * 120)
 
 last_trade_time = 0
@@ -239,8 +239,8 @@ try:
                 all_below_threshold = all(stats[d] < ENTRY_THRESHOLD for d in required_digits)
                 entry_str = f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Inactive (7: {stats[7]:.1f}%, 8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
 
-                # Rule 1: Most and second most appearing digits are between 0 and 6
-                rule1_met = (most_digit in range(0, 7)) and (second_digit in range(0, 7))
+                # Rule 1: Most and second most appearing digits are between 0 and 4
+                rule1_met = (most_digit in range(0, 5)) and (second_digit in range(0, 5))
 
                 # Rule 2: Least appearing digit is between 5 and 9
                 rule2_met = least_digit in range(5, 10)
@@ -277,9 +277,9 @@ try:
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Top2 in 0-6: [{most_digit}, {second_digit}], Least in 5-9: [{least_digit}])... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Top2 in 0-4: [{most_digit}, {second_digit}], Least in 5-9: [{least_digit}])... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Top2 in 0-6: {rule1_met} | Least in 5-9: {rule2_met})"
+                    signal_msg = f"Waiting... (Top2 in 0-4: {rule1_met} | Least in 5-9: {rule2_met})"
 
                 # Print each new tick cleanly on its own line
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {signal_msg}")
