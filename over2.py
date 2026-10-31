@@ -194,7 +194,7 @@ start_performance_log_listener(driver)
 # --- MONITORING LOOP ---
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
 print("Condition 1: Most & 2nd Most appearing digits must be between 5 and 9")
-print("Condition 2: Least appearing digit must be between 0 and 4")
+print("Condition 2: Least appearing digit must be between 0 and 2")
 print(f"Condition 3: Digits 0, 1, and 2 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print("=" * 120)
@@ -242,8 +242,8 @@ try:
                 # Rule 1: Most and second most appearing digits are between 5 and 9
                 rule1_met = (most_digit in range(5, 10)) and (second_digit in range(5, 10))
 
-                # Rule 2: Least appearing digit is between 0 and 4
-                rule2_met = least_digit in range(0, 5)
+                # Rule 2: Least appearing digit is between 0 and 2
+                rule2_met = least_digit in range(0, 3)
 
                 # Combined Strategy Trigger
                 strategy_triggered = rule1_met and rule2_met
@@ -277,9 +277,9 @@ try:
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Top2 in 5-9: [{most_digit}, {second_digit}], Least in 0-4: [{least_digit}])... Waiting for Digits 0, 1, 2 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Top2 in 5-9: [{most_digit}, {second_digit}], Least in 0-2: [{least_digit}])... Waiting for Digits 0, 1, 2 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Top2 in 5-9: {rule1_met} | Least in 0-4: {rule2_met})"
+                    signal_msg = f"Waiting... (Top2 in 5-9: {rule1_met} | Least in 0-2: {rule2_met})"
 
                 # Print each new tick cleanly on its own line
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {signal_msg}")
