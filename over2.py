@@ -1,19 +1,22 @@
 import json
 import threading
 import time
+import ctypes
+import sys
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.0           # Digits 0, 1, and 2 must all be BELOW this percentage (< 10%)
+ENTRY_THRESHOLD = 10.0          # Digits 0, 1, and 2 must all be BELOW this percentage (< 10%)
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
-PREV_DIGIT_MIN = 5               # The digit BEFORE the entry digit (0 or 1) must be between
-PREV_DIGIT_MAX = 9               # PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
+PREV_DIGIT_MIN = 5              # The digit BEFORE the entry digit (0 or 1) must be between
+PREV_DIGIT_MAX = 9              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
-COOLDOWN_SECONDS = 3             # Pause between trade triggers
+COOLDOWN_SECONDS = 3            # Pause between trade triggers
 
 # Leave empty ("") to automatically click the main green Buy button,
 # or set a word from the button text e.g. "buy".
@@ -197,6 +200,7 @@ print("Condition 1: Most & 2nd Most appearing digits must be between 5 and 9")
 print("Condition 2: Least appearing digit must be between 0 and 2")
 print(f"Condition 3: Digits 0, 1, and 2 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print("Safety Trigger: Instant CMD collapse if most occurring digit is between 0 and 3")
 print("=" * 120)
 
 last_trade_time = 0
@@ -216,13 +220,25 @@ try:
             prev_digit = tick_state["prev_digit"]
 
             if stats:
-                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
-
                 # Sort digits by percentage descending
                 sorted_digits = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
                 most_digit = sorted_digits[0]
                 second_digit = sorted_digits[1]
                 least_digit = min(stats, key=stats.get)
+
+                # --- NEW FEATURE: Collapse CMD if most occurring digit is between 0 and 3 ---
+                if most_digit in [0, 1, 2, 3]:
+                    print(f"\n[!] SHUTDOWN: Most occurring digit is [{most_digit}] (InRange 0-3). Collapsing CMD window...")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                    if hwnd:
+                        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                    sys.exit(0)
+
+                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
 
                 digit_parts = []
                 for d in range(10):
@@ -244,6 +260,53 @@ try:
 
                 # Rule 2: Least appearing digit is between 0 and 2
                 rule2_met = least_digit in range(0, 3)
+
+                # Combined Strategy Trigger
+                strategy_triggered = rule1_met and rule2_met
+
+                # Rule 3: Spot last digit matches entry digits (0 or 1) and 0, 1, 2 are all below threshold
+                spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
+
+                # Rule 4: Digit BEFORE the entry digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
+                prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
+
+                current_time = time.time()
+
+                if strategy_triggered and spot_matches_entry and prev_ok:
+                    if (current_time - last_trade_time) > COOLDOWN_SECONDS:
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot ({last_digit}) matched Entry after prev digit {prev_digit}"
+                        if AUTO_TRADE:
+                            ok, detail = execute_trade_click(driver)
+                            if ok:
+                                print(f"\n[✓] {spot_str} | {signal_msg} -> ORDER EXECUTED! Clicked: {detail}")
+                                last_trade_time = current_time
+                            else:
+                                print(f"\n[!] {spot_str} | {signal_msg} -> Click failed: {detail}")
+                        else:
+                            print(f"\n[DEMO MODE] {spot_str} | {signal_msg} -> Set AUTO_TRADE = True to click.")
+                            last_trade_time = current_time
+                    else:
+                        remaining = int(COOLDOWN_SECONDS - (current_time - last_trade_time)) + 1
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! (Cooldown active: {remaining}s remaining)"
+                elif strategy_triggered and (last_digit in TARGET_ENTRY_DIGITS) and not all_below_threshold:
+                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 0, 1, 2 must all be < {ENTRY_THRESHOLD}%)"
+                elif strategy_triggered and spot_matches_entry:
+                    signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
+                elif strategy_triggered:
+                    signal_msg = f"Strategy Ready (Top2 in 5-9: [{most_digit}, {second_digit}], Least in 0-2: [{least_digit}])... Waiting for Digits 0, 1, 2 < {ENTRY_THRESHOLD}% & Spot Match"
+                else:
+                    signal_msg = f"Waiting... (Top2 in 5-9: {rule1_met} | Least in 0-2: {rule2_met})"
+
+                # Print each new tick cleanly on its own line
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {signal_msg}")
+            else:
+                print(f"[!] {status}")
+
+        time.sleep(LOOP_DELAY)
+
+except KeyboardInterrupt:
+    print("\n\n[!] Monitoring stopped by user.")
+st_digit in range(0, 3)
 
                 # Combined Strategy Trigger
                 strategy_triggered = rule1_met and rule2_met
