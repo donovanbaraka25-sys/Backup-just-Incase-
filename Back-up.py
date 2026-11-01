@@ -1,6 +1,9 @@
 import json
 import threading
 import time
+import ctypes
+import sys
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -203,6 +206,7 @@ print("Condition 2: Least appearing digit must be between 7 and 9")
 print(f"Condition 3: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print(f"Condition 5: At least {LOW_DIGIT_MIN_COUNT} of digits 0-4 must be ABOVE {LOW_DIGIT_THRESHOLD}%")
+print("Safety Trigger: Instant CMD collapse if most occurring digit is between 6 and 9")
 print("=" * 120)
 
 last_trade_time = 0
@@ -222,13 +226,26 @@ try:
             prev_digit = tick_state["prev_digit"]
 
             if stats:
-                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
-
                 # Sort digits by percentage descending
                 sorted_digits = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
                 most_digit = sorted_digits[0]
                 second_digit = sorted_digits[1]
                 least_digit = min(stats, key=stats.get)
+
+                # --- NEW FEATURE: Collapse CMD if most occurring digit is between 6 and 9 ---
+                if most_digit in [6, 7, 8, 9]:
+                    print(f"\n[!] SHUTDOWN: Most occurring digit is [{most_digit}] (InRange 6-9). Collapsing CMD window...")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    # Send close message to current console window
+                    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                    if hwnd:
+                        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+                    sys.exit(0)
+
+                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
 
                 digit_parts = []
                 for d in range(10):
