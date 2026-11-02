@@ -26,7 +26,7 @@ ABOVE_CHECK_PERCENT = 10.0
 # ===== END STRATEGY CONFIG =====
 
 # --- GENERAL SETTINGS ---
-AUTO_TRADE = False              # False = demo (prints signals only). Set True to click Buy for real.
+AUTO_TRADE = True             # False = demo (prints signals only). Set True to click Buy for real.
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
 BUTTON_KEYWORD = ""             # Leave empty to click the first enabled Buy button, or e.g. "buy"
 LOOP_DELAY = 0.1                # How often to check for new ticks
