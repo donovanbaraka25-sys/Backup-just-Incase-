@@ -199,10 +199,9 @@ start_performance_log_listener(driver)
 # --- MONITORING LOOP ---
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
 print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 4")
-print("Condition 2: Least appearing digit must be between 7 and 9")
-print(f"Condition 3: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
-print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
-print(f"Condition 5: At least {LOW_DIGIT_MIN_COUNT} of digits 0-4 must be ABOVE {LOW_DIGIT_THRESHOLD}%")
+print(f"Condition 2: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
+print(f"Condition 3: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print(f"Condition 4: At least {LOW_DIGIT_MIN_COUNT} of digits 0-4 must be ABOVE {LOW_DIGIT_THRESHOLD}%")
 print("=" * 120)
 
 last_trade_time = 0
@@ -248,21 +247,18 @@ try:
                 # Rule 1: Most and second most appearing digits are between 0 and 4
                 rule1_met = (most_digit in range(0, 5)) and (second_digit in range(0, 5))
 
-                # Rule 2: Least appearing digit is between 7 and 9
-                rule2_met = least_digit in range(7, 10)
-
-                # Rule 5: At least 4 of digits 0-4 must be above 10%
+                # Rule 4 (now Rule 3): At least 4 of digits 0-4 must be above threshold
                 low_digits_above = [d for d in LOW_DIGITS if stats[d] > LOW_DIGIT_THRESHOLD]
                 rule5_met = len(low_digits_above) >= LOW_DIGIT_MIN_COUNT
                 low_str = f"Digits 0-4 > {LOW_DIGIT_THRESHOLD}%: {len(low_digits_above)}/{len(LOW_DIGITS)} ({'Active' if rule5_met else 'Inactive'})"
 
-                # Combined Strategy Trigger
-                strategy_triggered = rule1_met and rule2_met and rule5_met
+                # Combined Strategy Trigger (Rule 2 requirement removed)
+                strategy_triggered = rule1_met and rule5_met
 
-                # Rule 3: Spot last digit matches entry digits (8 or 9) and 7, 8, 9 are all below threshold
+                # Spot last digit matches entry digits (8 or 9) and 7, 8, 9 are all below threshold
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
 
-                # Rule 4: Digit BEFORE the entry digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
+                # Digit BEFORE the entry digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
                 prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
 
                 current_time = time.time()
@@ -288,9 +284,9 @@ try:
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Top2 in 0-4: [{most_digit}, {second_digit}], Least in 7-9: [{least_digit}], {len(low_digits_above)}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%)... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Top2 in 0-4: [{most_digit}, {second_digit}], {len(low_digits_above)}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%)... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Top2 in 0-4: {rule1_met} | Least in 7-9: {rule2_met} | {LOW_DIGIT_MIN_COUNT}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%: {rule5_met})"
+                    signal_msg = f"Waiting... (Top2 in 0-4: {rule1_met} | {LOW_DIGIT_MIN_COUNT}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%: {rule5_met})"
 
                 # Print each new tick cleanly on its own line
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {low_str}  ||  {signal_msg}")
@@ -301,3 +297,4 @@ try:
 
 except KeyboardInterrupt:
     print("\n\n[!] Monitoring stopped by user.")
+    
