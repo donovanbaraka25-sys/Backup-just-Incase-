@@ -6,14 +6,19 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.0           # Digits 0, 1, and 2 must all be BELOW this percentage (< 10%)
-TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
+ENTRY_THRESHOLD = 10.0          # Digits 7, 8, and 9 must all be BELOW this percentage (< 10%)
+TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
 
-PREV_DIGIT_MIN = 5               # The digit BEFORE the entry digit (0 or 1) must be between
-PREV_DIGIT_MAX = 9               # PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
+PREV_DIGIT_MIN = 0              # The digit BEFORE the entry digit (8 or 9) must be between
+PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
+
+# --- LOW-DIGIT SPREAD FILTER ---
+LOW_DIGITS = [0, 1, 2, 3, 4]    # Digits to monitor
+LOW_DIGIT_THRESHOLD = 10.0      # Each counted digit must be ABOVE this percentage
+LOW_DIGIT_MIN_COUNT = 4         # At least this many of the 5 digits must be above the threshold
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
-COOLDOWN_SECONDS = 3             # Pause between trade triggers
+COOLDOWN_SECONDS = 3            # Pause between trade triggers
 
 # Leave empty ("") to automatically click the main green Buy button,
 # or set a word from the button text e.g. "buy".
@@ -193,10 +198,11 @@ start_performance_log_listener(driver)
 
 # --- MONITORING LOOP ---
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
-print("Condition 1: Most & 2nd Most appearing digits must be between 4 and 9")
-print("Condition 2: Least appearing digit must be between 0 and 2")
-print(f"Condition 3: Digits 0, 1, and 2 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
+print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 6")
+print("Condition 2: Least appearing digit must be between 7 and 9")
+print(f"Condition 3: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 4: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print(f"Condition 5: At least {LOW_DIGIT_MIN_COUNT} of digits 0-4 must be ABOVE {LOW_DIGIT_THRESHOLD}%")
 print("=" * 120)
 
 last_trade_time = 0
@@ -234,16 +240,68 @@ try:
                     digit_parts.append(f"[{d}]: {stats[d]:>4.1f}%{tag}")
                 digits_output = " | ".join(digit_parts)
 
-                # --- REQUIREMENT: Digits 0, 1, and 2 must all be below ENTRY_THRESHOLD ---
-                required_digits = [0, 1, 2]
+                # --- REQUIREMENT: Digits 7, 8, and 9 must all be below ENTRY_THRESHOLD ---
+                required_digits = [7, 8, 9]
                 all_below_threshold = all(stats[d] < ENTRY_THRESHOLD for d in required_digits)
-                entry_str = f"Digits 0, 1, 2 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 0, 1, 2 < {ENTRY_THRESHOLD}%: Inactive (0: {stats[0]:.1f}%, 1: {stats[1]:.1f}%, 2: {stats[2]:.1f}%)"
+                entry_str = f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Inactive (7: {stats[7]:.1f}%, 8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
 
-                # Rule 1: Most and second most appearing digits are between 4 and 9
-                rule1_met = (most_digit in range(4, 10)) and (second_digit in range(4, 10))
+                # Rule 1: Most and second most appearing digits are between 0 and 6
+                rule1_met = (most_digit in range(0, 7)) and (second_digit in range(0, 7))
 
-                # Rule 2: Least appearing digit is between 0 and 2
-                rule2_met = least_digit in range(0, 3)
+                # Rule 2: Least appearing digit is between 7 and 9
+                rule2_met = least_digit in range(7, 10)
+
+                # Rule 5: At least 4 of digits 0-4 must be above 10%
+                low_digits_above = [d for d in LOW_DIGITS if stats[d] > LOW_DIGIT_THRESHOLD]
+                rule5_met = len(low_digits_above) >= LOW_DIGIT_MIN_COUNT
+                low_str = f"Digits 0-4 > {LOW_DIGIT_THRESHOLD}%: {len(low_digits_above)}/{len(LOW_DIGITS)} ({'Active' if rule5_met else 'Inactive'})"
+
+                # Combined Strategy Trigger
+                strategy_triggered = rule1_met and rule2_met and rule5_met
+
+                # Rule 3: Spot last digit matches entry digits (8 or 9) and 7, 8, 9 are all below threshold
+                spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
+
+                # Rule 4: Digit BEFORE the entry digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
+                prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
+
+                current_time = time.time()
+
+                if strategy_triggered and spot_matches_entry and prev_ok:
+                    if (current_time - last_trade_time) > COOLDOWN_SECONDS:
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot ({last_digit}) matched Entry after prev digit {prev_digit}"
+                        if AUTO_TRADE:
+                            ok, detail = execute_trade_click(driver)
+                            if ok:
+                                print(f"\n[✓] {spot_str} | {signal_msg} -> ORDER EXECUTED! Clicked: {detail}")
+                                last_trade_time = current_time
+                            else:
+                                print(f"\n[!] {spot_str} | {signal_msg} -> Click failed: {detail}")
+                        else:
+                            print(f"\n[DEMO MODE] {spot_str} | {signal_msg} -> Set AUTO_TRADE = True to click.")
+                            last_trade_time = current_time
+                    else:
+                        remaining = int(COOLDOWN_SECONDS - (current_time - last_trade_time)) + 1
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! (Cooldown active: {remaining}s remaining)"
+                elif strategy_triggered and (last_digit in TARGET_ENTRY_DIGITS) and not all_below_threshold:
+                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 7, 8, 9 must all be < {ENTRY_THRESHOLD}%)"
+                elif strategy_triggered and spot_matches_entry:
+                    signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
+                elif strategy_triggered:
+                    signal_msg = f"Strategy Ready (Top2 in 0-6: [{most_digit}, {second_digit}], Least in 7-9: [{least_digit}], {len(low_digits_above)}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%)... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
+                else:
+                    signal_msg = f"Waiting... (Top2 in 0-6: {rule1_met} | Least in 7-9: {rule2_met} | {LOW_DIGIT_MIN_COUNT}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%: {rule5_met})"
+
+                # Print each new tick cleanly on its own line
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {low_str}  ||  {signal_msg}")
+            else:
+                print(f"[!] {status}")
+
+        time.sleep(LOOP_DELAY)
+
+except KeyboardInterrupt:
+    print("\n\n[!] Monitoring stopped by user.")
+st_digit in range(0, 3)
 
                 # Combined Strategy Trigger
                 strategy_triggered = rule1_met and rule2_met
