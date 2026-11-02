@@ -1,16 +1,15 @@
-import json
-import threading
-import time
 import os
-import sys
 import subprocess
+import sys
+import time
+
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 # --- GITHUB CONFIGURATION ---
 GITHUB_OVER_2_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/over2%20(1).py"
-GITHUB_UNDER_7_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/Back-up%20(1).py""
+GITHUB_UNDER_7_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/Back-up%20(1).py"
 
 # Strategies are saved in your user folder (always writable), NOT in Program Files.
 STRATEGY_DIR = os.path.join(os.path.expanduser("~"), "deriv_strategies")
@@ -22,31 +21,47 @@ STRATEGY_FILES = {
     "under_7": os.path.join(STRATEGY_DIR, "strategy_under7.py"),
 }
 
-# Strategy Lock Duration: 5 minutes (300 seconds) before re-checking regime
-STRATEGY_LOCK_DURATION = 300
-# Wait this long after a failed download before trying again
-DOWNLOAD_RETRY_DELAY = 30
+# --- SETTINGS ---
+DEBUGGER_ADDRESS = "127.0.0.1:9222"
+STRATEGY_LOCK_DURATION = 300     # 5 minutes before the regime can switch the strategy
+DOWNLOAD_RETRY_DELAY = 30        # Wait this long after a failed download/launch before trying again
+LAUNCH_CHECK_DELAY = 3           # Seconds to wait after launch, then check it didn't crash
+# If True, the strategy is only launched when the Over/Under tab AND the prediction digit
+# were both found on the page. Prevents trading the wrong contract. Set False to skip this check.
+REQUIRE_UI_CONFIRMED = True
 
-# Connect to active Chrome instance with performance logging enabled
+
+def pause_and_exit(message=None, code=1):
+    """Keeps the console window open so errors can be read, then exits."""
+    if message:
+        print(message)
+    try:
+        input("\nPress Enter to exit...")
+    except EOFError:
+        pass
+    sys.exit(code)
+
+
+# --- CONNECT TO CHROME ---
 chrome_options = Options()
-chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
-chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+chrome_options.add_experimental_option("debuggerAddress", DEBUGGER_ADDRESS)
 
 try:
     driver = webdriver.Chrome(options=chrome_options)
     print("[✓] Connected to live Chrome session.")
 except Exception as e:
-    print(f"[✗] Connection error: {e}")
-    input("\nPress Enter to exit...")
-    exit()
+    pause_and_exit(
+        f"[✗] Connection error: {e}\n"
+        f"    Make sure Chrome was started with --remote-debugging-port=9222"
+    )
 
 
-def switch_to_deriv_tab(driver):
+def switch_to_deriv_tab(drv):
     """Finds and switches to the DTrader tab."""
-    for handle in driver.window_handles:
+    for handle in drv.window_handles:
         try:
-            driver.switch_to.window(handle)
-            url = driver.current_url.lower()
+            drv.switch_to.window(handle)
+            url = drv.current_url.lower()
             if "dtrader" in url or "deriv.com" in url:
                 return True
         except Exception:
@@ -57,66 +72,11 @@ def switch_to_deriv_tab(driver):
 if switch_to_deriv_tab(driver):
     print(f"[✓] Using tab: {driver.title} | {driver.current_url}")
 else:
-    print("[✗] Couldn't find the DTrader tab. Open it in the debug Chrome window first.")
-    input("\nPress Enter to exit...")
-    exit()
-
-# --- LIVE TICK FEED SNIFFER ---
-tick_state = {
-    "quote": None,
-    "digit": None,
-    "prev_digit": None,
-    "time": 0,
-    "count": 0,
-    "status": "not started",
-}
+    pause_and_exit("[✗] Couldn't find the DTrader tab. Open it in the debug Chrome window first.")
 
 
-def start_performance_log_listener(driver):
-    """Background thread that reads Chrome performance logs to capture live ticks."""
-    def run():
-        tick_state["status"] = "listening to browser network"
-        while True:
-            try:
-                logs = driver.get_log("performance")
-                for entry in logs:
-                    try:
-                        message = json.loads(entry["message"])["message"]
-                        if message["method"] == "Network.webSocketFrameReceived":
-                            payload = message["params"]["response"].get("payloadData", "")
-                            if "quote" in payload or "tick" in payload:
-                                data = json.loads(payload)
-                                tick_data = None
-                                if "tick" in data:
-                                    tick_data = data["tick"]
-                                elif data.get("msg_type") == "tick":
-                                    tick_data = data["tick"]
-
-                                if tick_data:
-                                    quote_val = tick_data.get("quote")
-                                    if quote_val is not None:
-                                        quote_str = str(quote_val)
-                                        digit = int(quote_str[-1])
-                                        prev = tick_state["digit"]
-                                        tick_state.update(
-                                            prev_digit=prev,
-                                            quote=quote_str,
-                                            digit=digit,
-                                            time=time.time(),
-                                            count=tick_state["count"] + 1,
-                                            status="streaming",
-                                        )
-                    except Exception:
-                        pass
-            except Exception as e:
-                tick_state["status"] = f"log error: {str(e)[:50]}"
-            time.sleep(0.05)
-
-    threading.Thread(target=run, daemon=True).start()
-
-
-# --- PROVEN DOM PERCENTAGE EXTRACTOR ---
-def extract_all_digit_percentages(driver):
+# --- DOM PERCENTAGE EXTRACTOR ---
+def extract_all_digit_percentages(drv):
     """Pulls all 10 digit percentages from the DTrader DOM stats table."""
     js_code = r"""
     let allNodes = Array.from(document.querySelectorAll('*'));
@@ -127,7 +87,7 @@ def extract_all_digit_percentages(driver):
     return pctNodes.map(el => el.innerText.trim());
     """
     try:
-        raw_results = driver.execute_script(js_code)
+        raw_results = drv.execute_script(js_code)
         if not raw_results:
             return None, "No percentage nodes found on page."
         cleaned = [float(val.replace("%", "").strip()) for val in raw_results]
@@ -139,6 +99,7 @@ def extract_all_digit_percentages(driver):
         return None, f"JS error: {str(e)[:100]}"
 
 
+# --- GITHUB DOWNLOAD ---
 def download_strategy_from_github(url, local_filename):
     """Downloads the strategy file from GitHub. Returns the saved file path, or None on failure."""
     try:
@@ -148,9 +109,7 @@ def download_strategy_from_github(url, local_filename):
             print(f"[✗] Failed to download. HTTP Status Code: {response.status_code}")
             return None
 
-        # Write to a temp file, then atomically swap it in.
-        # os.replace overwrites an existing file in one step (os.remove + os.rename
-        # is what was failing with Errno 13).
+        # Write to a temp file, then swap it in with os.replace (overwrites in one step).
         temp_filename = local_filename + ".tmp"
         with open(temp_filename, "w", encoding="utf-8") as f:
             f.write(response.text)
@@ -171,7 +130,8 @@ def download_strategy_from_github(url, local_filename):
         return None
 
 
-def set_dtrader_ui_state(driver, target_contract, target_digit):
+# --- DTRADER UI CONFIGURATOR ---
+def set_dtrader_ui_state(drv, target_contract, target_digit):
     """Automatically clicks the contract type (over/under) and prediction digit on DTrader UI."""
     js_code = r"""
     return (function(targetContract, targetDigit) {
@@ -212,11 +172,12 @@ def set_dtrader_ui_state(driver, target_contract, target_digit):
     })(arguments[0], arguments[1]);
     """
     try:
-        return driver.execute_script(js_code, target_contract, target_digit)
+        return drv.execute_script(js_code, target_contract, target_digit)
     except Exception as e:
         return {"error": str(e)}
 
 
+# --- STRATEGY PROCESS CONTROL ---
 running_process = None  # the currently running strategy subprocess
 
 
@@ -239,14 +200,146 @@ def launch_strategy(script_path):
     stop_running_strategy()
     try:
         flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        # stdin=DEVNULL: if the strategy hits an error, its "Press Enter" prompt gets end-of-input
+        # and the script exits right away, so the manager can see that it failed.
         running_process = subprocess.Popen(
             [sys.executable, script_path],
             cwd=os.path.dirname(script_path),
             creationflags=flags,
+            stdin=subprocess.DEVNULL,
         )
-        time.sleep(3)  # give it a moment, then check it didn't crash immediately
+        time.sleep(LAUNCH_CHECK_DELAY)
         if running_process.poll() is not None:
-            print(f"[✗] Strategy exited immediately (code {running_process.returncode}). Check its console window / errors.")
+            print(
+                f"[✗] Strategy exited immediately (code {running_process.returncode}). "
+                f"To see the error, run it by hand: python \"{script_path}\""
+            )
+            running_process = None
+            return False
+        print(f"[✓] Strategy running (PID {running_process.pid}): {script_path}")
+        return True
+    except Exception as e:
+        print(f"[✗] Could not launch strategy: {e}")
+        running_process = None
+        return False
+
+
+def activate_strategy(key, label, ui_contract, ui_digit, url):
+    """Sets the UI, downloads the script, launches it, and returns True if it worked."""
+    print(f"[+] Regime matched: {label}. Updating UI ({ui_contract.title()}, Digit {ui_digit}) & fetching script...")
+    ui_result = set_dtrader_ui_state(driver, ui_contract, ui_digit)
+    print(f"[i] UI result: {ui_result}")
+
+    if REQUIRE_UI_CONFIRMED:
+        ui_ok = isinstance(ui_result, dict) and ui_result.get("contract_set") and ui_result.get("digit_set")
+        if not ui_ok:
+            print("[✗] Could not find the contract tab and/or prediction digit on the page. "
+                  "Strategy NOT launched (to avoid trading the wrong contract).")
+            return False
+
+    saved_path = download_strategy_from_github(url, STRATEGY_FILES[key])
+    if not saved_path:
+        return False
+    return launch_strategy(saved_path)
+
+
+# --- MASTER MANAGER LOOP ---
+def main():
+    global running_process
+
+    print("\n[ MASTER MANAGER INITIALIZED ]")
+    print(f"Strategies are saved in: {STRATEGY_DIR}")
+    print("Analyzing market regime, managing GitHub scripts & enforcing 5-minute locks...")
+    print("=" * 130)
+
+    current_active_strategy = None
+    strategy_lock_until = 0.0
+    next_download_attempt = 0.0  # backoff after a failed download/launch
+
+    while True:
+        current_time = time.time()
+
+        # Detect a strategy that crashed or was closed after it started
+        if running_process is not None and running_process.poll() is not None:
+            print(f"[!] Strategy '{current_active_strategy}' stopped unexpectedly (code {running_process.returncode}).")
+            running_process = None
+            current_active_strategy = None
+            strategy_lock_until = 0.0
+            next_download_attempt = current_time + DOWNLOAD_RETRY_DELAY
+
+        # If a strategy is locked in, bypass regime checking for the lock duration
+        if current_active_strategy and current_time < strategy_lock_until:
+            remaining_lock = int(strategy_lock_until - current_time)
+            m, s = divmod(remaining_lock, 60)
+            print(f"[LOCK ACTIVE] Strategy '{current_active_strategy}' running. Time remaining: {m:02d}m {s:02d}s")
+            time.sleep(5)
+            continue
+
+        stats, status = extract_all_digit_percentages(driver)
+
+        if stats:
+            sum_0_to_4 = sum(stats[d] for d in range(0, 5))
+            sum_5_to_9 = sum(stats[d] for d in range(5, 10))
+
+            sorted_digits = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
+            most_digit = sorted_digits[0]
+            second_digit = sorted_digits[1]
+
+            detected_regime = "MIXED"
+            if most_digit in range(0, 5) and second_digit in range(0, 5):
+                detected_regime = "UNDER_7"
+            elif most_digit in range(5, 10) and second_digit in range(5, 10):
+                detected_regime = "OVER_2"
+
+            digit_parts = []
+            for d in range(10):
+                tag = ""
+                if d == most_digit:
+                    tag = " [1st]"
+                elif d == second_digit:
+                    tag = " [2nd]"
+                digit_parts.append(f"[{d}]: {stats[d]:>4.1f}%{tag}")
+            digits_output = " | ".join(digit_parts)
+
+            print(
+                f"Regime: {detected_regime:<8} | Top2: [{most_digit}, {second_digit}]  ||  "
+                f"Sum(0-4): {sum_0_to_4:5.1f}% | Sum(5-9): {sum_5_to_9:5.1f}%  ||  {digits_output}"
+            )
+
+            wanted = None
+            if detected_regime == "OVER_2":
+                wanted = ("over_2", "Over 2", "over", 2, GITHUB_OVER_2_URL)
+            elif detected_regime == "UNDER_7":
+                wanted = ("under_7", "Under 7", "under", 7, GITHUB_UNDER_7_URL)
+
+            if wanted and current_active_strategy != wanted[0] and current_time >= next_download_attempt:
+                key, label, ui_contract, ui_digit, url = wanted
+                if activate_strategy(key, label, ui_contract, ui_digit, url):
+                    current_active_strategy = key
+                    strategy_lock_until = time.time() + STRATEGY_LOCK_DURATION
+                    next_download_attempt = 0.0
+                    print(f"[✓] {label} strategy started. Locked in for 5 minutes.")
+                else:
+                    next_download_attempt = time.time() + DOWNLOAD_RETRY_DELAY
+                    print(f"[!] Download/launch failed. Retrying in {DOWNLOAD_RETRY_DELAY}s.")
+        else:
+            print(f"[!] Status: {status}")
+
+        time.sleep(1)
+
+
+try:
+    main()
+except KeyboardInterrupt:
+    print("\n\n[!] Master Manager stopped by user.")
+except Exception as e:
+    print(f"\n\n[✗] Critical Error: {type(e).__name__}: {e}")
+finally:
+    stop_running_strategy()
+    try:
+        input("\nPress Enter to exit...")
+    except EOFError:
+        pass immediately (code {running_process.returncode}). Check its console window / errors.")
             running_process = None
             return False
         print(f"[✓] Strategy running (PID {running_process.pid}): {script_path}")
