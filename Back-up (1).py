@@ -6,14 +6,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 9.7           # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 9.7             # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 0              # The 2nd-to-last quote digit must be between
 PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
 
 # --- LEAST DIGIT SPREAD/DIFFERENCE FILTER ---
-LEAST_PCT_DIFF_MAX = 0.2        # Maximum percentage difference between 1st least and 2nd least appearing digits
+LEAST_PCT_DIFF_MIN = 0.2        # Minimum percentage difference between 1st least and 2nd least appearing digits (must be > 0.2%)
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
@@ -199,7 +199,7 @@ start_performance_log_listener(driver)
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
 print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
-print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be <= {LEAST_PCT_DIFF_MAX}%")
+print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
 print("=" * 120)
 
 last_trade_time = 0
@@ -245,10 +245,10 @@ try:
                 all_below_threshold = all(stats[d] < ENTRY_THRESHOLD for d in required_digits)
                 entry_str = f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Inactive (8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
 
-                # Least Digits Diff Rule: Difference between 1st least and 2nd least appearing digits <= LEAST_PCT_DIFF_MAX
+                # Least Digits Diff Rule: Difference between 1st least and 2nd least appearing digits > LEAST_PCT_DIFF_MIN
                 diff_least_val = stats[second_least_digit] - stats[least_digit]
-                rule_least_diff_met = diff_least_val <= LEAST_PCT_DIFF_MAX
-                diff_str = f"Least Digits Diff (≤{LEAST_PCT_DIFF_MAX}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
+                rule_least_diff_met = diff_least_val > LEAST_PCT_DIFF_MIN
+                diff_str = f"Least Digits Diff (>{LEAST_PCT_DIFF_MIN}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
 
                 # Combined Strategy Trigger
                 strategy_triggered = rule_least_diff_met
@@ -284,7 +284,7 @@ try:
                 elif strategy_triggered:
                     signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%)... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Least Diff ≤{LEAST_PCT_DIFF_MAX}%: {rule_least_diff_met})"
+                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met})"
 
                 # Print each new tick cleanly on its own line
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {signal_msg}")
@@ -295,3 +295,4 @@ try:
 
 except KeyboardInterrupt:
     print("\n\n[!] Monitoring stopped by user.")
+    
