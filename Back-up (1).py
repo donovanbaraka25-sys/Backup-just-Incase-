@@ -6,16 +6,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.0          # Digits 7, 8, and 9 must all be BELOW this percentage (< 10%)
+ENTRY_THRESHOLD = 9.7           # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
 
-PREV_DIGIT_MIN = 0              # The digit BEFORE the entry digit (8 or 9) must be between
+PREV_DIGIT_MIN = 0              # The 2nd-to-last quote digit must be between
 PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
 
-# --- LOW-DIGIT SPREAD FILTER ---
-LOW_DIGITS = [0, 1, 2, 3, 4]    # Digits to monitor
-LOW_DIGIT_THRESHOLD = 10.0      # Each counted digit must be ABOVE this percentage
-LOW_DIGIT_MIN_COUNT = 4         # At least this many of the 5 digits must be above the threshold
+# --- LEAST DIGIT SPREAD/DIFFERENCE FILTER ---
+LEAST_PCT_DIFF_MAX = 0.2        # Maximum percentage difference between 1st least and 2nd least appearing digits
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
@@ -92,16 +90,17 @@ def start_performance_log_listener(driver):
                                     quote_val = tick_data.get("quote")
                                     if quote_val is not None:
                                         quote_str = str(quote_val)
-                                        digit = int(quote_str[-1])
-                                        prev = tick_state["digit"]
-                                        tick_state.update(
-                                            prev_digit=prev,
-                                            quote=quote_str,
-                                            digit=digit,
-                                            time=time.time(),
-                                            count=tick_state["count"] + 1,
-                                            status="streaming",
-                                        )
+                                        if len(quote_str) >= 2:
+                                            digit = int(quote_str[-1])       # Last digit of quote string
+                                            prev_digit = int(quote_str[-2])  # Second-to-last digit of quote string
+                                            tick_state.update(
+                                                prev_digit=prev_digit,
+                                                quote=quote_str,
+                                                digit=digit,
+                                                time=time.time(),
+                                                count=tick_state["count"] + 1,
+                                                status="streaming",
+                                            )
                     except Exception:
                         pass
             except Exception as e:
@@ -198,10 +197,9 @@ start_performance_log_listener(driver)
 
 # --- MONITORING LOOP ---
 print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
-print("Condition 1: Most & 2nd Most appearing digits must be between 0 and 4")
-print(f"Condition 2: Digits 7, 8, and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
-print(f"Condition 3: Digit BEFORE the entry digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
-print(f"Condition 4: At least {LOW_DIGIT_MIN_COUNT} of digits 0-4 must be ABOVE {LOW_DIGIT_THRESHOLD}%")
+print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
+print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
+print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be <= {LEAST_PCT_DIFF_MAX}%")
 print("=" * 120)
 
 last_trade_time = 0
@@ -221,13 +219,16 @@ try:
             prev_digit = tick_state["prev_digit"]
 
             if stats:
-                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
+                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
 
-                # Sort digits by percentage descending
-                sorted_digits = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
-                most_digit = sorted_digits[0]
-                second_digit = sorted_digits[1]
-                least_digit = min(stats, key=stats.get)
+                # Sort digits by percentage ascending for least appearing digits
+                sorted_digits_asc = sorted(stats.keys(), key=lambda d: stats[d])
+                least_digit = sorted_digits_asc[0]
+                second_least_digit = sorted_digits_asc[1]
+                
+                # Also track most appearing for labeling
+                sorted_digits_desc = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
+                most_digit = sorted_digits_desc[0]
 
                 digit_parts = []
                 for d in range(10):
@@ -239,33 +240,30 @@ try:
                     digit_parts.append(f"[{d}]: {stats[d]:>4.1f}%{tag}")
                 digits_output = " | ".join(digit_parts)
 
-                # --- REQUIREMENT: Digits 7, 8, and 9 must all be below ENTRY_THRESHOLD ---
-                required_digits = [7, 8, 9]
+                # --- REQUIREMENT: Digits 8 and 9 must all be below ENTRY_THRESHOLD ---
+                required_digits = [8, 9]
                 all_below_threshold = all(stats[d] < ENTRY_THRESHOLD for d in required_digits)
-                entry_str = f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 7, 8, 9 < {ENTRY_THRESHOLD}%: Inactive (7: {stats[7]:.1f}%, 8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
+                entry_str = f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Inactive (8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
 
-                # Rule 1: Most and second most appearing digits are between 0 and 4
-                rule1_met = (most_digit in range(0, 5)) and (second_digit in range(0, 5))
+                # Least Digits Diff Rule: Difference between 1st least and 2nd least appearing digits <= LEAST_PCT_DIFF_MAX
+                diff_least_val = stats[second_least_digit] - stats[least_digit]
+                rule_least_diff_met = diff_least_val <= LEAST_PCT_DIFF_MAX
+                diff_str = f"Least Digits Diff (≤{LEAST_PCT_DIFF_MAX}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
 
-                # Rule 4 (now Rule 3): At least 4 of digits 0-4 must be above threshold
-                low_digits_above = [d for d in LOW_DIGITS if stats[d] > LOW_DIGIT_THRESHOLD]
-                rule5_met = len(low_digits_above) >= LOW_DIGIT_MIN_COUNT
-                low_str = f"Digits 0-4 > {LOW_DIGIT_THRESHOLD}%: {len(low_digits_above)}/{len(LOW_DIGITS)} ({'Active' if rule5_met else 'Inactive'})"
+                # Combined Strategy Trigger
+                strategy_triggered = rule_least_diff_met
 
-                # Combined Strategy Trigger (Rule 2 requirement removed)
-                strategy_triggered = rule1_met and rule5_met
-
-                # Spot last digit matches entry digits (8 or 9) and 7, 8, 9 are all below threshold
+                # Spot last digit matches entry digits (8 or 9) and 8, 9 are all below threshold
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
 
-                # Digit BEFORE the entry digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
+                # Second-to-last digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
                 prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
 
                 current_time = time.time()
 
                 if strategy_triggered and spot_matches_entry and prev_ok:
                     if (current_time - last_trade_time) > COOLDOWN_SECONDS:
-                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot ({last_digit}) matched Entry after prev digit {prev_digit}"
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry with 2nd-to-last digit {prev_digit}"
                         if AUTO_TRADE:
                             ok, detail = execute_trade_click(driver)
                             if ok:
@@ -280,16 +278,16 @@ try:
                         remaining = int(COOLDOWN_SECONDS - (current_time - last_trade_time)) + 1
                         signal_msg = f"🔥 FULL EXECUTION TRIGGER! (Cooldown active: {remaining}s remaining)"
                 elif strategy_triggered and (last_digit in TARGET_ENTRY_DIGITS) and not all_below_threshold:
-                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 7, 8, 9 must all be < {ENTRY_THRESHOLD}%)"
+                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 8, 9 must all be < {ENTRY_THRESHOLD}%)"
                 elif strategy_triggered and spot_matches_entry:
-                    signal_msg = f"Entry digit {last_digit} hit but previous digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
+                    signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Top2 in 0-4: [{most_digit}, {second_digit}], {len(low_digits_above)}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%)... Waiting for Digits 7, 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%)... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Top2 in 0-4: {rule1_met} | {LOW_DIGIT_MIN_COUNT}/5 of 0-4 > {LOW_DIGIT_THRESHOLD}%: {rule5_met})"
+                    signal_msg = f"Waiting... (Least Diff ≤{LEAST_PCT_DIFF_MAX}%: {rule_least_diff_met})"
 
                 # Print each new tick cleanly on its own line
-                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {low_str}  ||  {signal_msg}")
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {signal_msg}")
             else:
                 print(f"[!] {status}")
 
@@ -297,4 +295,3 @@ try:
 
 except KeyboardInterrupt:
     print("\n\n[!] Monitoring stopped by user.")
-    
