@@ -286,10 +286,16 @@ def main():
             second_digit = sorted_digits[1]
 
             detected_regime = "MIXED"
-            if most_digit in range(0, 5) and second_digit in range(0, 5):
-                detected_regime = "UNDER_7"
-            elif most_digit in range(5, 10) and second_digit in range(5, 10):
-                detected_regime = "OVER_2"
+            
+            # UNDER_7 condition: Top two digits in 0-5 range AND digits 8 and 9 are both below 9.5%
+            if most_digit in range(0, 6) and second_digit in range(0, 6):
+                if stats[8] < 9.5 and stats[9] < 9.5:
+                    detected_regime = "UNDER_7"
+            
+            # OVER_2 condition: Top two digits in 4-9 range AND digits 0 and 1 are both below 9.5%
+            elif most_digit in range(4, 10) and second_digit in range(4, 10):
+                if stats[0] < 9.5 and stats[1] < 9.5:
+                    detected_regime = "OVER_2"
 
             digit_parts = []
             for d in range(10):
