@@ -1,13 +1,14 @@
 import json
 import threading
 import time
+import requests  # Added for fetching the remote JSON file
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
 ENTRY_THRESHOLD = 9.7           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
-TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
+TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met (updated to 0 and 1)
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
 PREV_DIGIT_MAX = 9              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
@@ -19,6 +20,11 @@ LEAST_PCT_DIFF_MIN = 0.2        # Minimum percentage difference between 1st leas
 MOST_DIGIT_MIN = 4              # 1st and 2nd most appearing digits must be between
 MOST_DIGIT_MAX = 9              # MOST_DIGIT_MIN and MOST_DIGIT_MAX (4 to 9)
 MOST_PCT_DIFF_MIN = 0.2         # Minimum percentage difference between 1st and 2nd most appearing digits
+
+# --- STABILITY (CHOP) CONFIGURATION ---
+CHOP_URL = "https://gist.githubusercontent.com/donovanbaraka25-sys/fa16beac3e64ad0a682713902d70d4e6/raw/95e52f6f008e2126d5b9d0dd19f347f6d6e66717/Chop.json"
+CHOP_THRESHOLD = 50.0           # Stability value must be STRICTLY BELOW this number
+CHOP_CHECK_INTERVAL = 60.0      # How often (in seconds) to fetch the updated stability value (set to 60s / 1 minute)
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
@@ -59,6 +65,36 @@ if switch_to_deriv_tab(driver):
 else:
     print("[✗] Couldn't find the DTrader tab. Open it in the debug Chrome window first.")
     exit()
+
+
+# --- STABILITY VALUE FETCHER ---
+chop_state = {
+    "value": None,
+    "last_fetched": 0
+}
+
+def get_current_chop():
+    """Fetches the stability value from the remote JSON file periodically."""
+    global chop_state
+    current_time = time.time()
+    
+    # Only fetch if interval has passed to prevent excessive web requests
+    if current_time - chop_state["last_fetched"] > CHOP_CHECK_INTERVAL:
+        try:
+            response = requests.get(CHOP_URL, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict):
+                    chop_val = data.get("chop", data.get("Chop", None))
+                    if chop_val is not None:
+                        chop_state["value"] = float(chop_val)
+                        chop_state["last_fetched"] = current_time
+        except Exception as e:
+            # Silently keep the last known value if fetch fails temporarily
+            pass
+            
+    return chop_state["value"]
+
 
 # --- LIVE TICK FEED SNIFFER ---
 tick_state = {
@@ -207,6 +243,8 @@ print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN}
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be >= {LEAST_PCT_DIFF_MIN}%")
 print(f"Condition 4: Most & 2nd Most appearing digits must be between {MOST_DIGIT_MIN} and {MOST_DIGIT_MAX}")
 print(f"Condition 5: Difference between 1st most and 2nd most appearing digits must be >= {MOST_PCT_DIFF_MIN}%")
+print(f"Condition 6: Stability must be < {CHOP_THRESHOLD} (Checked every 60s)")
+print(f"Condition 7: Incoming last digit must match target entry digits {TARGET_ENTRY_DIGITS}")
 print("=" * 120)
 
 last_trade_time = 0
@@ -224,6 +262,9 @@ try:
             spot_price = tick_state["quote"]
             last_digit = tick_state["digit"]
             prev_digit = tick_state["prev_digit"]
+            
+            # Fetch current stability value (cached/polled every 60 seconds)
+            current_chop = get_current_chop()
 
             if stats:
                 spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
@@ -265,10 +306,14 @@ try:
                 rule_most_met = most_range_ok and most_diff_ok
                 diff_most_str = f"Most Range [{MOST_DIGIT_MIN}-{MOST_DIGIT_MAX}]: {most_range_ok} | Most Diff (≥{MOST_PCT_DIFF_MIN}%): {diff_most_val:.1f}%"
 
-                # Combined Strategy Trigger (Both Least and Most rules must be met)
-                strategy_triggered = rule_least_diff_met and rule_most_met
+                # Stability Rule Check (Condition 6)
+                chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
+                chop_str = f"Stability: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
-                # Spot last digit matches entry digits (8 or 9) and 0, 1 are all below threshold
+                # Combined Strategy Trigger (Least, Most, and Stability rules must all be met)
+                strategy_triggered = rule_least_diff_met and rule_most_met and chop_ok
+
+                # Spot last digit matches entry digits (0 or 1) and 0, 1 are all below threshold
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
 
                 # Second-to-last digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
@@ -278,7 +323,7 @@ try:
 
                 if strategy_triggered and spot_matches_entry and prev_ok:
                     if (current_time - last_trade_time) > COOLDOWN_SECONDS:
-                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry with 2nd-to-last digit {prev_digit}"
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry with 2nd-to-last digit {prev_digit} & Stability: {current_chop}"
                         if AUTO_TRADE:
                             ok, detail = execute_trade_click(driver)
                             if ok:
@@ -296,13 +341,15 @@ try:
                     signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 0, 1 must all be < {ENTRY_THRESHOLD}%)"
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
+                elif (rule_least_diff_met and rule_most_met) and not chop_ok:
+                    signal_msg = f"Waiting... Stability value is too high ({current_chop} >= {CHOP_THRESHOLD})"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Least Diff: {diff_least_val:.1f}%, Most Diff: {diff_most_val:.1f}%)... Waiting for Digits 0, 1 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Least Diff: {diff_least_val:.1f}%, Most Diff: {diff_most_val:.1f}%, Stability: {current_chop})... Waiting for Digits 0, 1 < {ENTRY_THRESHOLD}% & Spot Match"
                 else:
-                    signal_msg = f"Waiting... (Least Met: {rule_least_diff_met} | Most Met: {rule_most_met})"
+                    signal_msg = f"Waiting... (Least Met: {rule_least_diff_met} | Most Met: {rule_most_met} | Stability OK: {chop_ok})"
 
                 # Print each new tick cleanly on its own line
-                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_least_str}  ||  {diff_most_str}  ||  {signal_msg}")
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_least_str}  ||  {diff_most_str}  ||  {chop_str}  ||  {signal_msg}")
             else:
                 print(f"[!] {status}")
 
@@ -310,3 +357,4 @@ try:
 
 except KeyboardInterrupt:
     print("\n\n[!] Monitoring stopped by user.")
+    
