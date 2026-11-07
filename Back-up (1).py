@@ -23,6 +23,7 @@ CHOP_CHECK_INTERVAL = 60.0      # How often (in seconds) to fetch the updated ch
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
+LOSS_HALT_SECONDS = 45          # Lockout duration after a losing trade
 
 # Leave empty ("") to automatically click the main green Buy button,
 # or set a word from the button text, e.g., "buy".
@@ -73,26 +74,23 @@ def get_current_chop():
     global chop_state
     current_time = time.time()
     
-    # Only fetch if interval has passed to prevent excessive web requests
     if current_time - chop_state["last_fetched"] > CHOP_CHECK_INTERVAL:
         try:
             response = requests.get(CHOP_URL, timeout=3)
             if response.status_code == 200:
                 data = response.json()
-                # Adjust 'chop' key depending on your exact json key structure (e.g., data.get('chop'))
                 if isinstance(data, dict):
                     chop_val = data.get("chop", data.get("Chop", None))
                     if chop_val is not None:
                         chop_state["value"] = float(chop_val)
                         chop_state["last_fetched"] = current_time
-        except Exception as e:
-            # Silently keep the last known value if fetch fails temporarily
+        except Exception:
             pass
             
     return chop_state["value"]
 
 
-# --- LIVE TICK FEED SNIFFER ---
+# --- LIVE TICK FEED & CONTRACT SNIFFER ---
 tick_state = {
     "quote": None,
     "digit": None,
@@ -102,9 +100,19 @@ tick_state = {
     "status": "not started",
 }
 
+contract_state = {
+    "contract_id": None,
+    "status": "idle",        # idle, open, won, lost
+    "profit": 0.0,
+    "total_wins": 0,
+    "total_losses": 0,
+    "net_profit": 0.0,
+    "loss_cooldown_until": 0.0 # Timestamp tracking when the 45s penalty lifts
+}
+
 
 def start_performance_log_listener(driver):
-    """Background thread that reads Chrome performance logs to capture live ticks."""
+    """Background thread that reads Chrome performance logs to capture live ticks and trade outcomes."""
     def run():
         tick_state["status"] = "listening to browser network"
         while True:
@@ -115,6 +123,8 @@ def start_performance_log_listener(driver):
                         message = json.loads(entry["message"])["message"]
                         if message["method"] == "Network.webSocketFrameReceived":
                             payload = message["params"]["response"].get("payloadData", "")
+                            
+                            # 1. Parse Ticks & Quotes
                             if "quote" in payload or "tick" in payload:
                                 data = json.loads(payload)
                                 tick_data = None
@@ -128,8 +138,8 @@ def start_performance_log_listener(driver):
                                     if quote_val is not None:
                                         quote_str = str(quote_val)
                                         if len(quote_str) >= 2:
-                                            digit = int(quote_str[-1])       # Last digit of quote string
-                                            prev_digit = int(quote_str[-2])  # Second-to-last digit of quote string
+                                            digit = int(quote_str[-1])       
+                                            prev_digit = int(quote_str[-2])  
                                             tick_state.update(
                                                 prev_digit=prev_digit,
                                                 quote=quote_str,
@@ -138,6 +148,40 @@ def start_performance_log_listener(driver):
                                                 count=tick_state["count"] + 1,
                                                 status="streaming",
                                             )
+
+                            # 2. Parse Contract Results (Win / Loss Detection + 45s Halt Trigger)
+                            if "proposal_open_contract" in payload or "buy" in payload:
+                                data = json.loads(payload)
+                                msg_type = data.get("msg_type")
+
+                                # Capture buy confirmation
+                                if msg_type == "buy":
+                                    buy_info = data.get("buy", {})
+                                    c_id = buy_info.get("contract_id")
+                                    if c_id:
+                                        contract_state["contract_id"] = c_id
+                                        contract_state["status"] = "open"
+                                        print(f"\n[+] Contract Purchased | ID: {c_id}")
+
+                                # Capture final contract settlement updates
+                                elif msg_type == "proposal_open_contract":
+                                    poc = data.get("proposal_open_contract", {})
+                                    if poc.get("is_sold") == 1:  # Contract settled
+                                        profit = float(poc.get("profit", 0.0))
+                                        contract_state["profit"] = profit
+                                        contract_state["net_profit"] += profit
+
+                                        if profit < 0:
+                                            contract_state["status"] = "lost"
+                                            contract_state["total_losses"] += 1
+                                            contract_state["loss_cooldown_until"] = time.time() + LOSS_HALT_SECONDS
+                                            print(f"\n[✗] TRADE RESULT: LOSS ❌ | Profit: {profit:.2f} | Net P/L: {contract_state['net_profit']:.2f}")
+                                            print(f"[!] HALTING TRADING FOR {LOSS_HALT_SECONDS} SECONDS DUE TO LOSS.")
+                                        else:
+                                            contract_state["status"] = "won"
+                                            contract_state["total_wins"] += 1
+                                            print(f"\n[✓] TRADE RESULT: WIN ✅ | Profit: +{profit:.2f} | Net P/L: {contract_state['net_profit']:.2f}")
+
                     except Exception:
                         pass
             except Exception as e:
@@ -169,7 +213,7 @@ def extract_all_digit_percentages(driver):
 
 
 def list_purchase_buttons(driver):
-    """Returns ONLY the main execution Buy button (ignoring Over/Under selection tabs)."""
+    """Returns ONLY the main execution Buy button."""
     found = []
     for el in driver.find_elements(By.TAG_NAME, "button"):
         try:
@@ -229,11 +273,11 @@ print("[i] Purchase buttons detected right now:")
 for _el, _label, _enabled in list_purchase_buttons(driver):
     print(f"    - {_label} | {'enabled' if _enabled else 'DISABLED'}")
 
-# Start background performance log tick sniffer
+# Start background performance log tick & contract sniffer
 start_performance_log_listener(driver)
 
 # --- MONITORING LOOP ---
-print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER ]")
+print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER WITH 45S LOSS HALT ]")
 print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
@@ -247,7 +291,6 @@ try:
     while True:
         current_count = tick_state["count"]
 
-        # PROCESS ONLY WHEN A NEW TICK ARRIVES
         if current_count > last_processed_count:
             last_processed_count = current_count
 
@@ -255,19 +298,15 @@ try:
             spot_price = tick_state["quote"]
             last_digit = tick_state["digit"]
             prev_digit = tick_state["prev_digit"]
-            
-            # Fetch current chop value (cached/polled every 60 seconds)
             current_chop = get_current_chop()
 
             if stats:
-                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else f"Spot: Waiting for ticks..."
+                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else f"Spot: Waiting..."
 
-                # Sort digits by percentage ascending for least appearing digits
                 sorted_digits_asc = sorted(stats.keys(), key=lambda d: stats[d])
                 least_digit = sorted_digits_asc[0]
                 second_least_digit = sorted_digits_asc[1]
                 
-                # Also track most appearing for labeling
                 sorted_digits_desc = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
                 most_digit = sorted_digits_desc[0]
 
@@ -281,34 +320,33 @@ try:
                     digit_parts.append(f"[{d}]: {stats[d]:>4.1f}%{tag}")
                 digits_output = " | ".join(digit_parts)
 
-                # --- REQUIREMENT: Digits 8 and 9 must all be below ENTRY_THRESHOLD ---
                 required_digits = [8, 9]
                 all_below_threshold = all(stats[d] < ENTRY_THRESHOLD for d in required_digits)
-                entry_str = f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Inactive (8: {stats[8]:.1f}%, 9: {stats[9]:.1f}%)"
+                entry_str = f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Active" if all_below_threshold else f"Digits 8, 9 < {ENTRY_THRESHOLD}%: Inactive"
 
-                # Least Digits Diff Rule: Difference between 1st least and 2nd least appearing digits > LEAST_PCT_DIFF_MIN
                 diff_least_val = stats[second_least_digit] - stats[least_digit]
                 rule_least_diff_met = diff_least_val > LEAST_PCT_DIFF_MIN
-                diff_str = f"Least Digits Diff (>{LEAST_PCT_DIFF_MIN}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
+                diff_str = f"Least Diff (>{LEAST_PCT_DIFF_MIN}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
 
-                # Stability Rule Check
                 chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
                 chop_str = f"Stability: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
-                # Combined Strategy Trigger (including stability condition)
                 strategy_triggered = rule_least_diff_met and chop_ok
-
-                # Spot last digit matches entry digits (8 or 9) and 8, 9 are all below threshold
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
-
-                # Second-to-last digit must be between PREV_DIGIT_MIN and PREV_DIGIT_MAX
                 prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
 
                 current_time = time.time()
+                score_summary = f"[Wins: {contract_state['total_wins']} | Losses: {contract_state['total_losses']} | Net P/L: {contract_state['net_profit']:.2f}]"
 
-                if strategy_triggered and spot_matches_entry and prev_ok:
+                # Check if 45s loss lockout is currently active
+                in_loss_lockout = current_time < contract_state["loss_cooldown_until"]
+
+                if in_loss_lockout:
+                    halt_remaining = int(contract_state["loss_cooldown_until"] - current_time) + 1
+                    signal_msg = f"⏳ LOSS HALT ACTIVE! Paused for {halt_remaining}s more | {score_summary}"
+                elif strategy_triggered and spot_matches_entry and prev_ok:
                     if (current_time - last_trade_time) > COOLDOWN_SECONDS:
-                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry with 2nd-to-last digit {prev_digit} & Stability: {current_chop}"
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry | {score_summary}"
                         if AUTO_TRADE:
                             ok, detail = execute_trade_click(driver)
                             if ok:
@@ -317,23 +355,22 @@ try:
                             else:
                                 print(f"\n[!] {spot_str} | {signal_msg} -> Click failed: {detail}")
                         else:
-                            print(f"\n[DEMO MODE] {spot_str} | {signal_msg} -> Set AUTO_TRADE = True to click.")
+                            print(f"\n[DEMO MODE] {spot_str} | {signal_msg} -> Set AUTO_TRADE = True.")
                             last_trade_time = current_time
                     else:
                         remaining = int(COOLDOWN_SECONDS - (current_time - last_trade_time)) + 1
-                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! (Cooldown active: {remaining}s remaining)"
+                        signal_msg = f"🔥 FULL EXECUTION TRIGGER! (Cooldown active: {remaining}s remaining) | {score_summary}"
                 elif strategy_triggered and (last_digit in TARGET_ENTRY_DIGITS) and not all_below_threshold:
-                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 8, 9 must all be < {ENTRY_THRESHOLD}%)"
+                    signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 8, 9 must all be < {ENTRY_THRESHOLD}%) | {score_summary}"
                 elif strategy_triggered and spot_matches_entry:
-                    signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped"
+                    signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped | {score_summary}"
                 elif rule_least_diff_met and not chop_ok:
-                    signal_msg = f"Waiting... Stability value is too high ({current_chop} >= {CHOP_THRESHOLD})"
+                    signal_msg = f"Waiting... Stability value is too high ({current_chop} >= {CHOP_THRESHOLD}) | {score_summary}"
                 elif strategy_triggered:
-                    signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%, Stability: {current_chop})... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match"
+                    signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%)... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match | {score_summary}"
                 else:
-                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, Stability OK: {chop_ok})"
+                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, Stability OK: {chop_ok}) | {score_summary}"
 
-                # Print each new tick cleanly on its own line
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {chop_str}  ||  {signal_msg}")
             else:
                 print(f"[!] {status}")
@@ -341,4 +378,4 @@ try:
         time.sleep(LOOP_DELAY)
 
 except KeyboardInterrupt:
-    print("\n\n[!] Monitoring stopped by user.")
+    print(f"\n\n[!] Monitoring stopped by user. Final Stats -> Wins: {contract_state['total_wins']}, Losses: {contract_state['total_losses']}, Net P/L: {contract_state['net_profit']:.2f}")
