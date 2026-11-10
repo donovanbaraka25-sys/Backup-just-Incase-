@@ -1,25 +1,25 @@
 import json
 import threading
 import time
-import requests  # Added for fetching the remote JSON file
+import urllib.request
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 9.7             # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 9.7           # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 0              # The 2nd-to-last quote digit must be between
 PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
 
 # --- LEAST DIGIT SPREAD/DIFFERENCE FILTER ---
-LEAST_PCT_DIFF_MIN = 0.2        # Minimum percentage difference between 1st least and 2nd least appearing digits (must be > 0.2%)
+LEAST_PCT_DIFF_MIN = 0.2        # Min % difference between 1st least and 2nd least appearing digits (> 0.2%)
 
-# --- CHOP / STABILITY CONFIGURATION ---
-CHOP_URL = "https://gist.githubusercontent.com/donovanbaraka25-sys/fa16beac3e64ad0a682713902d70d4e6/raw/95e52f6f008e2126d5b9d0dd19f347f6d6e66717/Chop.json"
+# --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
 CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
-CHOP_CHECK_INTERVAL = 60.0      # How often (in seconds) to fetch the updated chop value (set to 60s / 1 minute)
+TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks
+TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
 COOLDOWN_SECONDS = 3            # Pause between trade triggers
@@ -43,51 +43,175 @@ except Exception as e:
     exit()
 
 
-def switch_to_deriv_tab(driver):
-    """Finds and switches to the DTrader tab."""
-    for handle in driver.window_handles:
-        try:
-            driver.switch_to.window(handle)
-            url = driver.current_url.lower()
-            if "dtrader" in url or "deriv.com" in url:
-                return True
-        except Exception:
+# --- TAB MANAGEMENT ---
+# Only one thread may drive the browser at a time, because tab switching affects every call.
+driver_lock = threading.RLock()
+tab_handles = {"dtrader": None, "tv": None}
+
+
+def find_tabs(driver):
+    """Finds the DTrader tab and chart tab via Chrome's debug endpoint (no tab switching, so nothing can hang)."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=3) as r:
+            targets = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"[!] Couldn't read the tab list: {e}")
+        return False
+
+    handles = driver.window_handles
+
+    def handle_for(target_id):
+        for h in handles:
+            if target_id in h:
+                return h
+        return None
+
+    for t in targets:
+        if t.get("type") != "page":
             continue
+        url = t.get("url", "").lower()
+        h = handle_for(t.get("id", ""))
+        if not h:
+            continue
+        if "dtrader" in url and not tab_handles["dtrader"]:
+            tab_handles["dtrader"] = h
+        elif any(k in url for k in TV_TAB_KEYWORDS) and not tab_handles["tv"]:
+            tab_handles["tv"] = h
+
+    if tab_handles["dtrader"]:
+        driver.switch_to.window(tab_handles["dtrader"])
+        return True
     return False
 
 
-if switch_to_deriv_tab(driver):
-    print(f"[✓] Using tab: {driver.title} | {driver.current_url}")
+with driver_lock:
+    found_dtrader = find_tabs(driver)
+
+if found_dtrader:
+    with driver_lock:
+        print(f"[✓] Using tab: {driver.title} | {driver.current_url}")
 else:
     print("[✗] Couldn't find the DTrader tab. Open it in the debug Chrome window first.")
     exit()
 
+if tab_handles["tv"]:
+    print("[✓] TradingView/chart tab found.")
+else:
+    print("[!] TradingView/chart tab NOT found. CHOP can't be read, so no trades will fire until it is open.")
 
-# --- CHOP VALUE FETCHER ---
-chop_state = {
-    "value": None,
-    "last_fetched": 0
+
+# --- CHART TAB CHOP CHECK (every 30 seconds) ---
+tv_state = {
+    "chop": None,
+    "last_check": 0.0,
 }
 
-def get_current_chop():
-    """Fetches the chop value from the remote JSON file periodically."""
-    global chop_state
-    current_time = time.time()
-    
-    if current_time - chop_state["last_fetched"] > CHOP_CHECK_INTERVAL:
+# Finds the legend row containing "CHOP", e.g. "CHOP 14 54.83".
+# It needs at least TWO numbers after the word CHOP (the period, then the value)
+# and returns the SECOND one, so "CHOP 14" alone can never be mistaken for a value.
+TV_CHOP_JS = """
+let candidates = Array.from(document.querySelectorAll('div, span'))
+    .filter(el => {
+        const t = (el.innerText || '');
+        return /chop/i.test(t) && t.length < 80;
+    });
+candidates.sort((a, b) => a.innerText.length - b.innerText.length);
+for (const el of candidates) {
+    let node = el;
+    for (let i = 0; i < 5 && node; i++) {
+        const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (t.length >= 80) break;
+        const idx = t.toLowerCase().indexOf('chop');
+        if (idx >= 0) {
+            const nums = t.slice(idx).match(/-?\\d+(?:\\.\\d+)?/g);
+            if (nums && nums.length >= 2) {
+                const v = parseFloat(nums[1]);
+                if (!isNaN(v) && v >= 0 && v <= 100) return {v: v, t: t};
+            }
+        }
+        node = node.parentElement;
+    }
+}
+return null;
+"""
+
+
+def scan_frames_for_chop(driver, depth=0):
+    """Tries the current document, then searches every iframe inside it (the Deriv chart may live in an iframe)."""
+    try:
+        res = driver.execute_script(TV_CHOP_JS)
+    except Exception:
+        res = None
+    if res is not None:
+        return res
+    if depth >= 3:
+        return None
+
+    try:
+        frames = driver.find_elements(By.TAG_NAME, "iframe")
+    except Exception:
+        return None
+
+    for frame in frames:
         try:
-            response = requests.get(CHOP_URL, timeout=3)
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, dict):
-                    chop_val = data.get("chop", data.get("Chop", None))
-                    if chop_val is not None:
-                        chop_state["value"] = float(chop_val)
-                        chop_state["last_fetched"] = current_time
+            driver.switch_to.frame(frame)
         except Exception:
-            pass
-            
-    return chop_state["value"]
+            continue
+        try:
+            r = scan_frames_for_chop(driver, depth + 1)
+        finally:
+            try:
+                driver.switch_to.parent_frame()
+            except Exception:
+                pass
+        if r is not None:
+            return r
+    return None
+
+
+def check_tradingview_tab(driver):
+    """Switches to the chart tab, reads CHOP (main page + iframes), then switches back to DTrader."""
+    if not tab_handles["tv"] or not tab_handles["dtrader"]:
+        return None
+
+    result = None
+    with driver_lock:
+        try:
+            driver.switch_to.window(tab_handles["tv"])
+            driver.switch_to.default_content()
+            time.sleep(0.3)  # give the legend a moment to render
+            result = scan_frames_for_chop(driver)
+            if result is None:
+                try:
+                    n_frames = len(driver.find_elements(By.TAG_NAME, "iframe"))
+                    print(f"\n[!] CHOP not found on chart tab | url: {driver.current_url[:60]} | iframes on page: {n_frames}")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"\n[!] Chart tab check failed: {str(e)[:100]}")
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+            try:
+                driver.switch_to.window(tab_handles["dtrader"])
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+    return result
+
+
+def get_current_chop():
+    """Returns the latest CHOP value, refreshing from the chart tab every TV_CHECK_INTERVAL seconds."""
+    now = time.time()
+    if now - tv_state["last_check"] > TV_CHECK_INTERVAL:
+        tv_state["last_check"] = now
+        res = check_tradingview_tab(driver)
+        if res is not None:
+            tv_state["chop"] = float(res["v"])
+            print(f"\n[TV] CHOP updated from chart tab: {tv_state['chop']}  (legend text read: '{res['t']}')")
+    return tv_state["chop"]
 
 
 # --- LIVE TICK FEED & CONTRACT SNIFFER ---
@@ -107,7 +231,7 @@ contract_state = {
     "total_wins": 0,
     "total_losses": 0,
     "net_profit": 0.0,
-    "loss_cooldown_until": 0.0 # Timestamp tracking when the 45s penalty lifts
+    "loss_cooldown_until": 0.0  # Timestamp tracking when the loss penalty lifts
 }
 
 
@@ -117,13 +241,14 @@ def start_performance_log_listener(driver):
         tick_state["status"] = "listening to browser network"
         while True:
             try:
-                logs = driver.get_log("performance")
+                with driver_lock:
+                    logs = driver.get_log("performance")
                 for entry in logs:
                     try:
                         message = json.loads(entry["message"])["message"]
                         if message["method"] == "Network.webSocketFrameReceived":
                             payload = message["params"]["response"].get("payloadData", "")
-                            
+
                             # 1. Parse Ticks & Quotes
                             if "quote" in payload or "tick" in payload:
                                 data = json.loads(payload)
@@ -138,8 +263,8 @@ def start_performance_log_listener(driver):
                                     if quote_val is not None:
                                         quote_str = str(quote_val)
                                         if len(quote_str) >= 2:
-                                            digit = int(quote_str[-1])       
-                                            prev_digit = int(quote_str[-2])  
+                                            digit = int(quote_str[-1])
+                                            prev_digit = int(quote_str[-2])
                                             tick_state.update(
                                                 prev_digit=prev_digit,
                                                 quote=quote_str,
@@ -149,7 +274,7 @@ def start_performance_log_listener(driver):
                                                 status="streaming",
                                             )
 
-                            # 2. Parse Contract Results (Win / Loss Detection + 45s Halt Trigger)
+                            # 2. Parse Contract Results (Win / Loss Detection + Halt Trigger)
                             if "proposal_open_contract" in payload or "buy" in payload:
                                 data = json.loads(payload)
                                 msg_type = data.get("msg_type")
@@ -270,18 +395,19 @@ def execute_trade_click(driver):
 
 # Show detected purchase buttons on startup
 print("[i] Purchase buttons detected right now:")
-for _el, _label, _enabled in list_purchase_buttons(driver):
-    print(f"    - {_label} | {'enabled' if _enabled else 'DISABLED'}")
+with driver_lock:
+    for _el, _label, _enabled in list_purchase_buttons(driver):
+        print(f"    - {_label} | {'enabled' if _enabled else 'DISABLED'}")
 
 # Start background performance log tick & contract sniffer
 start_performance_log_listener(driver)
 
 # --- MONITORING LOOP ---
-print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER WITH 45S LOSS HALT ]")
+print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER WITH LOSS HALT ]")
 print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
-print(f"Condition 4: Stability must be < {CHOP_THRESHOLD} (Checked every 60s)")
+print(f"Condition 4: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print("=" * 120)
 
 last_trade_time = 0
@@ -294,19 +420,20 @@ try:
         if current_count > last_processed_count:
             last_processed_count = current_count
 
-            stats, status = extract_all_digit_percentages(driver)
+            with driver_lock:
+                stats, status = extract_all_digit_percentages(driver)
             spot_price = tick_state["quote"]
             last_digit = tick_state["digit"]
             prev_digit = tick_state["prev_digit"]
             current_chop = get_current_chop()
 
             if stats:
-                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else f"Spot: Waiting..."
+                spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else "Spot: Waiting..."
 
                 sorted_digits_asc = sorted(stats.keys(), key=lambda d: stats[d])
                 least_digit = sorted_digits_asc[0]
                 second_least_digit = sorted_digits_asc[1]
-                
+
                 sorted_digits_desc = sorted(stats.keys(), key=lambda d: stats[d], reverse=True)
                 most_digit = sorted_digits_desc[0]
 
@@ -329,7 +456,7 @@ try:
                 diff_str = f"Least Diff (>{LEAST_PCT_DIFF_MIN}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
 
                 chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
-                chop_str = f"Stability: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
+                chop_str = f"CHOP: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
                 strategy_triggered = rule_least_diff_met and chop_ok
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
@@ -338,7 +465,7 @@ try:
                 current_time = time.time()
                 score_summary = f"[Wins: {contract_state['total_wins']} | Losses: {contract_state['total_losses']} | Net P/L: {contract_state['net_profit']:.2f}]"
 
-                # Check if 45s loss lockout is currently active
+                # Check if the loss lockout is currently active
                 in_loss_lockout = current_time < contract_state["loss_cooldown_until"]
 
                 if in_loss_lockout:
@@ -348,7 +475,8 @@ try:
                     if (current_time - last_trade_time) > COOLDOWN_SECONDS:
                         signal_msg = f"🔥 FULL EXECUTION TRIGGER! Spot last digit ({last_digit}) matched Entry | {score_summary}"
                         if AUTO_TRADE:
-                            ok, detail = execute_trade_click(driver)
+                            with driver_lock:
+                                ok, detail = execute_trade_click(driver)
                             if ok:
                                 print(f"\n[✓] {spot_str} | {signal_msg} -> ORDER EXECUTED! Clicked: {detail}")
                                 last_trade_time = current_time
@@ -365,11 +493,14 @@ try:
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped | {score_summary}"
                 elif rule_least_diff_met and not chop_ok:
-                    signal_msg = f"Waiting... Stability value is too high ({current_chop} >= {CHOP_THRESHOLD}) | {score_summary}"
+                    if current_chop is None:
+                        signal_msg = f"Waiting... No CHOP value read from chart tab yet | {score_summary}"
+                    else:
+                        signal_msg = f"Waiting... CHOP is too high ({current_chop} >= {CHOP_THRESHOLD}) | {score_summary}"
                 elif strategy_triggered:
                     signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%)... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match | {score_summary}"
                 else:
-                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, Stability OK: {chop_ok}) | {score_summary}"
+                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, CHOP OK: {chop_ok}) | {score_summary}"
 
                 print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {chop_str}  ||  {signal_msg}")
             else:
