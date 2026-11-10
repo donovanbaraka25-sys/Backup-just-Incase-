@@ -17,7 +17,7 @@ PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
 LEAST_PCT_DIFF_MIN = 0.2        # Min % difference between 1st least and 2nd least appearing digits (> 0.2%)
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
-CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
+CHOP_THRESHOLD = 47.0           # Chop value must be STRICTLY BELOW this number
 TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks
 TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
 
