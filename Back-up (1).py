@@ -18,7 +18,13 @@ LEAST_PCT_DIFF_MIN = 0.2        # Min % difference between 1st least and 2nd lea
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
 CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
-TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks
+
+# --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
+USE_CCI = True                  # Set to False to ignore CCI completely
+CCI_MIN = -200.0                # CCI must be between CCI_MIN and CCI_MAX (inclusive)
+CCI_MAX = -10.0                 # <-- placeholder range, change to your rule
+
+TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks (CHOP + CCI read together)
 TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
@@ -97,60 +103,72 @@ else:
 if tab_handles["tv"]:
     print("[✓] TradingView/chart tab found.")
 else:
-    print("[!] TradingView/chart tab NOT found. CHOP can't be read, so no trades will fire until it is open.")
+    print("[!] TradingView/chart tab NOT found. CHOP/CCI can't be read, so no trades will fire until it is open.")
 
 
-# --- CHART TAB CHOP CHECK (every 30 seconds) ---
+# --- CHART TAB INDICATOR CHECK (CHOP + CCI, every 30 seconds) ---
 tv_state = {
     "chop": None,
+    "cci": None,
     "last_check": 0.0,
 }
 
-# Finds the legend row containing "CHOP", e.g. "CHOP 14 54.83".
-# It needs at least TWO numbers after the word CHOP (the period, then the value)
-# and returns the SECOND one, so "CHOP 14" alone can never be mistaken for a value.
-TV_CHOP_JS = """
-let candidates = Array.from(document.querySelectorAll('div, span'))
-    .filter(el => {
-        const t = (el.innerText || '');
-        return /chop/i.test(t) && t.length < 80;
-    });
-candidates.sort((a, b) => a.innerText.length - b.innerText.length);
-for (const el of candidates) {
-    let node = el;
-    for (let i = 0; i < 5 && node; i++) {
-        const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
-        if (t.length >= 80) break;
-        const idx = t.toLowerCase().indexOf('chop');
-        if (idx >= 0) {
-            const nums = t.slice(idx).match(/-?\\d+(?:\\.\\d+)?/g);
-            if (nums && nums.length >= 2) {
-                const v = parseFloat(nums[1]);
-                if (!isNaN(v) && v >= 0 && v <= 100) return {v: v, t: t};
+# Finds the legend row for an indicator, e.g. "CHOP 14 54.83" or "CCI 20 close -45.12".
+# It needs at least TWO numbers after the indicator name (the period, then the value)
+# and returns the SECOND one, so the period alone can never be mistaken for a value.
+TV_INDICATORS_JS = """
+function readIndicator(name, lo, hi) {
+    const re = new RegExp(name, 'i');
+    let candidates = Array.from(document.querySelectorAll('div, span'))
+        .filter(el => {
+            const t = (el.innerText || '');
+            return re.test(t) && t.length < 80;
+        });
+    candidates.sort((a, b) => a.innerText.length - b.innerText.length);
+    for (const el of candidates) {
+        let node = el;
+        for (let i = 0; i < 5 && node; i++) {
+            const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (t.length >= 80) break;
+            const idx = t.toLowerCase().indexOf(name.toLowerCase());
+            if (idx >= 0) {
+                const nums = t.slice(idx).match(/-?\\d+(?:\\.\\d+)?/g);
+                if (nums && nums.length >= 2) {
+                    const v = parseFloat(nums[1]);
+                    if (!isNaN(v) && v >= lo && v <= hi) return {v: v, t: t};
+                }
             }
+            node = node.parentElement;
         }
-        node = node.parentElement;
     }
+    return null;
 }
-return null;
+return {chop: readIndicator('chop', 0, 100), cci: readIndicator('cci', -1000, 1000)};
 """
 
 
-def scan_frames_for_chop(driver, depth=0):
-    """Tries the current document, then searches every iframe inside it (the Deriv chart may live in an iframe)."""
+def needed_keys():
+    return ["chop"] + (["cci"] if USE_CCI else [])
+
+
+def scan_frames_for_indicators(driver, found, depth=0):
+    """Reads indicators from the current document, then searches iframes until everything needed is found."""
     try:
-        res = driver.execute_script(TV_CHOP_JS)
+        res = driver.execute_script(TV_INDICATORS_JS)
     except Exception:
         res = None
-    if res is not None:
-        return res
-    if depth >= 3:
-        return None
+    if res:
+        for k in ("chop", "cci"):
+            if found.get(k) is None and res.get(k) is not None:
+                found[k] = res[k]
+
+    if all(found.get(k) is not None for k in needed_keys()) or depth >= 3:
+        return
 
     try:
         frames = driver.find_elements(By.TAG_NAME, "iframe")
     except Exception:
-        return None
+        return
 
     for frame in frames:
         try:
@@ -158,35 +176,28 @@ def scan_frames_for_chop(driver, depth=0):
         except Exception:
             continue
         try:
-            r = scan_frames_for_chop(driver, depth + 1)
+            scan_frames_for_indicators(driver, found, depth + 1)
         finally:
             try:
                 driver.switch_to.parent_frame()
             except Exception:
                 pass
-        if r is not None:
-            return r
-    return None
+        if all(found.get(k) is not None for k in needed_keys()):
+            return
 
 
 def check_tradingview_tab(driver):
-    """Switches to the chart tab, reads CHOP (main page + iframes), then switches back to DTrader."""
+    """Switches to the chart tab, reads CHOP (and CCI), then switches back to DTrader."""
     if not tab_handles["tv"] or not tab_handles["dtrader"]:
         return None
 
-    result = None
+    found = {"chop": None, "cci": None}
     with driver_lock:
         try:
             driver.switch_to.window(tab_handles["tv"])
             driver.switch_to.default_content()
             time.sleep(0.3)  # give the legend a moment to render
-            result = scan_frames_for_chop(driver)
-            if result is None:
-                try:
-                    n_frames = len(driver.find_elements(By.TAG_NAME, "iframe"))
-                    print(f"\n[!] CHOP not found on chart tab | url: {driver.current_url[:60]} | iframes on page: {n_frames}")
-                except Exception:
-                    pass
+            scan_frames_for_indicators(driver, found)
         except Exception as e:
             print(f"\n[!] Chart tab check failed: {str(e)[:100]}")
         finally:
@@ -199,19 +210,34 @@ def check_tradingview_tab(driver):
                 driver.switch_to.default_content()
             except Exception:
                 pass
-    return result
+    return found
 
 
-def get_current_chop():
-    """Returns the latest CHOP value, refreshing from the chart tab every TV_CHECK_INTERVAL seconds."""
+def refresh_indicators():
+    """Refreshes CHOP and CCI from the chart tab every TV_CHECK_INTERVAL seconds."""
     now = time.time()
     if now - tv_state["last_check"] > TV_CHECK_INTERVAL:
         tv_state["last_check"] = now
-        res = check_tradingview_tab(driver)
-        if res is not None:
-            tv_state["chop"] = float(res["v"])
-            print(f"\n[TV] CHOP updated from chart tab: {tv_state['chop']}  (legend text read: '{res['t']}')")
-    return tv_state["chop"]
+        found = check_tradingview_tab(driver)
+        if found is None:
+            return
+
+        parts = []
+        if found.get("chop") is not None:
+            tv_state["chop"] = float(found["chop"]["v"])
+            parts.append(f"CHOP: {tv_state['chop']} ('{found['chop']['t']}')")
+        else:
+            print("\n[!] CHOP not found on chart tab (is the CHOP indicator on the chart?)")
+
+        if USE_CCI:
+            if found.get("cci") is not None:
+                tv_state["cci"] = float(found["cci"]["v"])
+                parts.append(f"CCI: {tv_state['cci']} ('{found['cci']['t']}')")
+            else:
+                print("\n[!] CCI not found on chart tab (add the CCI indicator to the chart via Indicators)")
+
+        if parts:
+            print("\n[TV] Updated from chart tab -> " + " | ".join(parts))
 
 
 # --- LIVE TICK FEED & CONTRACT SNIFFER ---
@@ -408,6 +434,8 @@ print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}
 print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
 print(f"Condition 4: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+if USE_CCI:
+    print(f"Condition 5: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print("=" * 120)
 
 last_trade_time = 0
@@ -425,7 +453,10 @@ try:
             spot_price = tick_state["quote"]
             last_digit = tick_state["digit"]
             prev_digit = tick_state["prev_digit"]
-            current_chop = get_current_chop()
+
+            refresh_indicators()
+            current_chop = tv_state["chop"]
+            current_cci = tv_state["cci"]
 
             if stats:
                 spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else "Spot: Waiting..."
@@ -458,7 +489,14 @@ try:
                 chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
                 chop_str = f"CHOP: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
-                strategy_triggered = rule_least_diff_met and chop_ok
+                if USE_CCI:
+                    cci_ok = (current_cci is not None) and (CCI_MIN <= current_cci <= CCI_MAX)
+                    cci_str = f"CCI: {current_cci} ({'Active' if cci_ok else 'Inactive'})"
+                else:
+                    cci_ok = True
+                    cci_str = "CCI: off"
+
+                strategy_triggered = rule_least_diff_met and chop_ok and cci_ok
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
                 prev_ok = (prev_digit is not None) and (PREV_DIGIT_MIN <= prev_digit <= PREV_DIGIT_MAX)
 
@@ -492,17 +530,25 @@ try:
                     signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 8, 9 must all be < {ENTRY_THRESHOLD}%) | {score_summary}"
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped | {score_summary}"
-                elif rule_least_diff_met and not chop_ok:
-                    if current_chop is None:
-                        signal_msg = f"Waiting... No CHOP value read from chart tab yet | {score_summary}"
-                    else:
-                        signal_msg = f"Waiting... CHOP is too high ({current_chop} >= {CHOP_THRESHOLD}) | {score_summary}"
+                elif rule_least_diff_met and not (chop_ok and cci_ok):
+                    reasons = []
+                    if not chop_ok:
+                        if current_chop is None:
+                            reasons.append("No CHOP value read yet")
+                        else:
+                            reasons.append(f"CHOP too high ({current_chop} >= {CHOP_THRESHOLD})")
+                    if not cci_ok:
+                        if current_cci is None:
+                            reasons.append("No CCI value read yet")
+                        else:
+                            reasons.append(f"CCI out of range ({current_cci} not in {CCI_MIN} to {CCI_MAX})")
+                    signal_msg = f"Waiting... {'; '.join(reasons)} | {score_summary}"
                 elif strategy_triggered:
                     signal_msg = f"Strategy Ready (Least2 Diff: {diff_least_val:.1f}%)... Waiting for Digits 8, 9 < {ENTRY_THRESHOLD}% & Spot Match | {score_summary}"
                 else:
-                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, CHOP OK: {chop_ok}) | {score_summary}"
+                    signal_msg = f"Waiting... (Least Diff >{LEAST_PCT_DIFF_MIN}%: {rule_least_diff_met}, CHOP OK: {chop_ok}, CCI OK: {cci_ok}) | {score_summary}"
 
-                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {chop_str}  ||  {signal_msg}")
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_str}  ||  {chop_str}  ||  {cci_str}  ||  {signal_msg}")
             else:
                 print(f"[!] {status}")
 
