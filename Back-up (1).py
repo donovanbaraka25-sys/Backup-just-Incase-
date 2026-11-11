@@ -435,7 +435,7 @@ print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN}
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
 print(f"Condition 4: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
-    print(f"Condition 5: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+    print(f" {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print("=" * 120)
 
 last_trade_time = 0
