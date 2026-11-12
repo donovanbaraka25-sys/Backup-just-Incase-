@@ -21,8 +21,8 @@ CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
-CCI_MIN = -200.0                # CCI must be between CCI_MIN and CCI_MAX (inclusive)
-CCI_MAX = -10.0                 # <-- placeholder range, change to your rule
+CCI_MIN = -300.0                # CCI must be between CCI_MIN and CCI_MAX (inclusive)
+CCI_MAX = -10.0
 
 TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks (CHOP + CCI read together)
 TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
@@ -113,7 +113,9 @@ tv_state = {
     "last_check": 0.0,
 }
 
-# Finds the legend row for an indicator, e.g. "CHOP 14 54.83" or "CCI 20 close -45.12".
+# Finds the legend row for an indicator, e.g. "CHOP 14 54.83" or "CCI 20 −226.30".
+# Special minus/dash characters (U+2212, U+2013, U+2014) are converted to a normal "-" first,
+# so negative values keep their sign.
 # It needs at least TWO numbers after the indicator name (the period, then the value)
 # and returns the SECOND one, so the period alone can never be mistaken for a value.
 TV_INDICATORS_JS = """
@@ -128,7 +130,7 @@ function readIndicator(name, lo, hi) {
     for (const el of candidates) {
         let node = el;
         for (let i = 0; i < 5 && node; i++) {
-            const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+            const t = (node.innerText || '').replace(/[\\u2212\\u2013\\u2014]/g, '-').replace(/\\s+/g, ' ').trim();
             if (t.length >= 80) break;
             const idx = t.toLowerCase().indexOf(name.toLowerCase());
             if (idx >= 0) {
@@ -435,7 +437,7 @@ print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN}
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
 print(f"Condition 4: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
-    print(f" {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+    print(f"Condition 5: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print("=" * 120)
 
 last_trade_time = 0
