@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 9.7           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 10.0           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
@@ -22,7 +22,7 @@ MOST_DIGIT_MAX = 9              # MOST_DIGIT_MIN and MOST_DIGIT_MAX (4 to 9)
 MOST_PCT_DIFF_MIN = 0.2         # Minimum percentage difference between 1st and 2nd most appearing digits
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
-CHOP_THRESHOLD = 47.0           # Chop value must be STRICTLY BELOW this number
+CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
