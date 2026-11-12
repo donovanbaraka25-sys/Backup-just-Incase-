@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 9.7            # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 9.7           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
@@ -26,7 +26,7 @@ CHOP_THRESHOLD = 47.0           # Chop value must be STRICTLY BELOW this number
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
-CCI_MIN = 10.0                # CCI must be between CCI_MIN and CCI_MAX (inclusive)
+CCI_MIN = 10.0                  # CCI must be between CCI_MIN and CCI_MAX (inclusive)
 CCI_MAX = 300.0                 # Adjust range as needed
 
 TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks (CHOP + CCI read together)
@@ -118,7 +118,9 @@ tv_state = {
     "last_check": 0.0,
 }
 
-# Finds the legend row for an indicator (e.g. "CHOP 14 54.83" or "CCI 20 close -45.12").
+# Finds the legend row for an indicator (e.g. "CHOP 14 54.83" or "CCI 20 −226.30").
+# Special minus/dash characters (U+2212, U+2013, U+2014) are converted to a normal "-" first,
+# so negative values keep their sign.
 # It needs at least TWO numbers after the indicator name (the period, then the value)
 # and returns the SECOND one, so the period alone can never be mistaken for a value.
 TV_INDICATORS_JS = """
@@ -133,7 +135,7 @@ function readIndicator(name, lo, hi) {
     for (const el of candidates) {
         let node = el;
         for (let i = 0; i < 5 && node; i++) {
-            const t = (node.innerText || '').replace(/\\s+/g, ' ').trim();
+            const t = (node.innerText || '').replace(/[\\u2212\\u2013\\u2014]/g, '-').replace(/\\s+/g, ' ').trim();
             if (t.length >= 80) break;
             const idx = t.toLowerCase().indexOf(name.toLowerCase());
             if (idx >= 0) {
@@ -442,7 +444,7 @@ print(f"Condition 4: Most & 2nd Most appearing digits must be between {MOST_DIGI
 print(f"Condition 5: Difference between 1st most and 2nd most appearing digits must be >= {MOST_PCT_DIFF_MIN}%")
 print(f"Condition 6: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
-    print(f"Condition 7: {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+    print(f"Condition 7: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print(f"Condition 8: Incoming last digit must match target entry digits {TARGET_ENTRY_DIGITS}")
 print("=" * 120)
 
@@ -584,4 +586,4 @@ try:
         time.sleep(LOOP_DELAY)
 
 except KeyboardInterrupt:
-    print(f"\n\n[!] Monitoring stopped by user. Final Stats -> Wins: {contract_state['total_wins']}, Losses: {contract_state['total_losses']}, Net P/L: {contract_state['net_profit']:.2f}")
+    print(f"\n\n[!] Monitoring stopped by user. Final Stats -> Wins: {contract_state['wins'] if False else contract_state['total_wins']}, Losses: {contract_state['total_losses']}, Net P/L: {contract_state['net_profit']:.2f}")
