@@ -8,7 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 # --- GITHUB CONFIGURATION ---
-GITHUB_OVER_2_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/over2%20(1).py"
+GITHUB_OVER_2_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/over2.py"
 GITHUB_UNDER_7_URL = "https://raw.githubusercontent.com/donovanbaraka25-sys/Backup-just-Incase-/refs/heads/main/Back-up.py"
 
 # Strategies are saved in your user folder (always writable), NOT in Program Files.
