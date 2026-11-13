@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.0           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 10.7           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
