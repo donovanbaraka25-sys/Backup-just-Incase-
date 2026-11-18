@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.7           # Digits 0 and 1 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 10.7          # Digits 0 and 1 must both be BELOW this percentage
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
@@ -22,7 +22,8 @@ MOST_DIGIT_MAX = 9              # MOST_DIGIT_MIN and MOST_DIGIT_MAX (4 to 9)
 MOST_PCT_DIFF_MIN = 0.2         # Minimum percentage difference between 1st and 2nd most appearing digits
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
-CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
+CHOP_MIN = 30.0                 # CHOP must be between CHOP_MIN and CHOP_MAX (inclusive)
+CHOP_MAX = 50.0
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
@@ -442,7 +443,7 @@ print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN}
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be >= {LEAST_PCT_DIFF_MIN}%")
 print(f"Condition 4: Most & 2nd Most appearing digits must be between {MOST_DIGIT_MIN} and {MOST_DIGIT_MAX}")
 print(f"Condition 5: Difference between 1st most and 2nd most appearing digits must be >= {MOST_PCT_DIFF_MIN}%")
-print(f"Condition 6: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+print(f"Condition 6: CHOP must be between {CHOP_MIN} and {CHOP_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
     print(f"Condition 7: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print(f"Condition 8: Incoming last digit must match target entry digits {TARGET_ENTRY_DIGITS}")
@@ -509,8 +510,8 @@ try:
                 rule_most_met = most_range_ok and most_diff_ok
                 diff_most_str = f"Most Range [{MOST_DIGIT_MIN}-{MOST_DIGIT_MAX}]: {most_range_ok} | Most Diff (≥{MOST_PCT_DIFF_MIN}%): {diff_most_val:.1f}%"
 
-                # CHOP Rule Check (Condition 6)
-                chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
+                # CHOP Rule Check (Condition 6) - must be inside the range
+                chop_ok = (current_chop is not None) and (CHOP_MIN <= current_chop <= CHOP_MAX)
                 chop_str = f"CHOP: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
                 # CCI Rule Check (Condition 7)
@@ -566,7 +567,7 @@ try:
                         if current_chop is None:
                             reasons.append("No CHOP value read yet")
                         else:
-                            reasons.append(f"CHOP too high ({current_chop} >= {CHOP_THRESHOLD})")
+                            reasons.append(f"CHOP out of range ({current_chop} not in {CHOP_MIN} to {CHOP_MAX})")
                     if not cci_ok:
                         if current_cci is None:
                             reasons.append("No CCI value read yet")
@@ -586,4 +587,4 @@ try:
         time.sleep(LOOP_DELAY)
 
 except KeyboardInterrupt:
-    print(f"\n\n[!] Monitoring stopped by user. Final Stats -> Wins: {contract_state['wins'] if False else contract_state['total_wins']}, Losses: {contract_state['total_losses']}, Net P/L: {contract_state['net_profit']:.2f}")
+    print(f"\n\n[!] Monitoring stopped by user. Final Stats -> Wins: {contract_state['total_wins']}, Losses: {contract_state['total_losses']}, Net P/L: {contract_state['net_profit']:.2f}")
