@@ -26,8 +26,8 @@ CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
-CCI_MIN = 10.0                  # CCI must be between CCI_MIN and CCI_MAX (inclusive)
-CCI_MAX = 300.0                 # Adjust range as needed
+CCI_MIN = 40.0                  # CCI must be between CCI_MIN and CCI_MAX (inclusive)
+CCI_MAX = 130.0                 # Adjust range as needed
 
 TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks (CHOP + CCI read together)
 TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
