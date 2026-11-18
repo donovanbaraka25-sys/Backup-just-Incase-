@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.7           # Digits 8 and 9 must both be BELOW this percentage (< 9.7%)
+ENTRY_THRESHOLD = 10.7          # Digits 8 and 9 must both be BELOW this percentage
 TARGET_ENTRY_DIGITS = [8, 9]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 0              # The 2nd-to-last quote digit must be between
@@ -17,7 +17,8 @@ PREV_DIGIT_MAX = 4              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (0 to 4)
 LEAST_PCT_DIFF_MIN = 0.2        # Min % difference between 1st least and 2nd least appearing digits (> 0.2%)
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
-CHOP_THRESHOLD = 50.0           # Chop value must be STRICTLY BELOW this number
+CHOP_MIN = 30.0                 # CHOP must be between CHOP_MIN and CHOP_MAX (inclusive)
+CHOP_MAX = 50.0
 
 # --- CCI CONFIGURATION (read from the TradingView/chart tab) ---
 USE_CCI = True                  # Set to False to ignore CCI completely
@@ -435,7 +436,7 @@ print("\n[ LIVE SPOT & 10-DIGIT PERCENTAGE TRACKER WITH LOSS HALT ]")
 print(f"Condition 1: Digits 8 and 9 must ALL be STRICTLY BELOW {ENTRY_THRESHOLD}% simultaneously")
 print(f"Condition 2: Second-to-last quote digit must be between {PREV_DIGIT_MIN} and {PREV_DIGIT_MAX}")
 print(f"Condition 3: Difference between 1st least and 2nd least appearing digits must be > {LEAST_PCT_DIFF_MIN}%")
-print(f"Condition 4: CHOP must be < {CHOP_THRESHOLD} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+print(f"Condition 4: CHOP must be between {CHOP_MIN} and {CHOP_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
     print(f"Condition 5: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 print("=" * 120)
@@ -488,7 +489,7 @@ try:
                 rule_least_diff_met = diff_least_val > LEAST_PCT_DIFF_MIN
                 diff_str = f"Least Diff (>{LEAST_PCT_DIFF_MIN}%): {diff_least_val:.1f}% ({'Active' if rule_least_diff_met else 'Inactive'})"
 
-                chop_ok = (current_chop is not None) and (current_chop < CHOP_THRESHOLD)
+                chop_ok = (current_chop is not None) and (CHOP_MIN <= current_chop <= CHOP_MAX)
                 chop_str = f"CHOP: {current_chop} ({'Active' if chop_ok else 'Inactive'})"
 
                 if USE_CCI:
@@ -538,7 +539,7 @@ try:
                         if current_chop is None:
                             reasons.append("No CHOP value read yet")
                         else:
-                            reasons.append(f"CHOP too high ({current_chop} >= {CHOP_THRESHOLD})")
+                            reasons.append(f"CHOP out of range ({current_chop} not in {CHOP_MIN} to {CHOP_MAX})")
                     if not cci_ok:
                         if current_cci is None:
                             reasons.append("No CCI value read yet")
