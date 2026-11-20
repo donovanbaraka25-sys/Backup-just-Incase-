@@ -7,19 +7,19 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 # --- STRATEGY CONFIGURATION ---
-ENTRY_THRESHOLD = 10.7          # Digits 0 and 1 must both be BELOW this percentage
+ENTRY_THRESHOLD = 12.7          # Digits 0 and 1 must both be BELOW this percentage
 TARGET_ENTRY_DIGITS = [0, 1]    # Valid entry digits to trade when conditions are met
 
 PREV_DIGIT_MIN = 5              # The 2nd-to-last quote digit must be between
 PREV_DIGIT_MAX = 9              # PREV_DIGIT_MIN and PREV_DIGIT_MAX (5 to 9)
 
 # --- LEAST DIGIT SPREAD/DIFFERENCE FILTER ---
-LEAST_PCT_DIFF_MIN = 0.2        # Minimum percentage difference between 1st least and 2nd least appearing digits
+LEAST_PCT_DIFF_MIN = 0.1        # Minimum percentage difference between 1st least and 2nd least appearing digits
 
 # --- MOST DIGIT CONFIGURATION & SPREAD FILTER ---
-MOST_DIGIT_MIN = 4              # 1st and 2nd most appearing digits must be between
+MOST_DIGIT_MIN = 0              # 1st and 2nd most appearing digits must be between
 MOST_DIGIT_MAX = 9              # MOST_DIGIT_MIN and MOST_DIGIT_MAX (4 to 9)
-MOST_PCT_DIFF_MIN = 0.2         # Minimum percentage difference between 1st and 2nd most appearing digits
+MOST_PCT_DIFF_MIN = 0.1         # Minimum percentage difference between 1st and 2nd most appearing digits
 
 # --- CHOP / STABILITY CONFIGURATION (read from the TradingView/chart tab) ---
 CHOP_MIN = 30.0                 # CHOP must be between CHOP_MIN and CHOP_MAX (inclusive)
@@ -30,12 +30,17 @@ USE_CCI = True                  # Set to False to ignore CCI completely
 CCI_MIN = 40.0                  # CCI must be between CCI_MIN and CCI_MAX (inclusive)
 CCI_MAX = 130.0                 # Adjust range as needed
 
-TV_CHECK_INTERVAL = 30.0        # Seconds between chart tab checks (CHOP + CCI read together)
+# --- ADX CONFIGURATION (read from the TradingView/chart tab) ---
+USE_ADX = True                  # Set to False to ignore ADX completely
+ADX_MIN = 30.0                  # ADX must be between ADX_MIN and ADX_MAX (inclusive)
+ADX_MAX = 50.0
+
+TV_CHECK_INTERVAL = 15.0        # Seconds between chart tab checks (CHOP + CCI + ADX read together)
 TV_TAB_KEYWORDS = ["tradingview", "charts.deriv"]   # URL fragments that identify the chart tab
 
 AUTO_TRADE = True               # Set to True to enable automatic button clicking
-COOLDOWN_SECONDS = 3            # Pause between trade triggers
-LOSS_HALT_SECONDS = 45          # Lockout duration after a losing trade
+COOLDOWN_SECONDS = 10            # Pause between trade triggers
+LOSS_HALT_SECONDS = 10          # Lockout duration after a losing trade
 
 # Leave empty ("") to automatically click the main green Buy button,
 # or set a word from the button text, e.g., "buy".
@@ -109,23 +114,27 @@ else:
 if tab_handles["tv"]:
     print("[✓] TradingView/chart tab found.")
 else:
-    print("[!] TradingView/chart tab NOT found. CHOP/CCI can't be read, so no trades will fire until it is open.")
+    print("[!] TradingView/chart tab NOT found. CHOP/CCI/ADX can't be read, so no trades will fire until it is open.")
 
 
-# --- CHART TAB INDICATOR CHECK (CHOP + CCI, every 30 seconds) ---
+# --- CHART TAB INDICATOR CHECK (CHOP + CCI + ADX) ---
 tv_state = {
     "chop": None,
     "cci": None,
+    "adx": None,
     "last_check": 0.0,
 }
 
-# Finds the legend row for an indicator (e.g. "CHOP 14 54.83" or "CCI 20 −226.30").
+# Finds the legend row for an indicator (e.g. "CHOP 14 54.83", "CCI 20 −226.30" or "ADX 14 14 27.45").
 # Special minus/dash characters (U+2212, U+2013, U+2014) are converted to a normal "-" first,
 # so negative values keep their sign.
-# It needs at least TWO numbers after the indicator name (the period, then the value)
-# and returns the SECOND one, so the period alone can never be mistaken for a value.
+# It needs at least TWO numbers after the indicator name (the period, then the value).
+# `pref` is the preferred position of the value among those numbers:
+#   CHOP / CCI have one period number  -> value is index 1
+#   ADX has two (smoothing + DI length) -> value is index 2. A row with fewer numbers (e.g. just the
+#   title "ADX 14 14") is skipped so the search climbs to the parent row that includes the value.
 TV_INDICATORS_JS = """
-function readIndicator(name, lo, hi) {
+function readIndicator(name, lo, hi, pref) {
     const re = new RegExp(name, 'i');
     let candidates = Array.from(document.querySelectorAll('div, span'))
         .filter(el => {
@@ -141,8 +150,8 @@ function readIndicator(name, lo, hi) {
             const idx = t.toLowerCase().indexOf(name.toLowerCase());
             if (idx >= 0) {
                 const nums = t.slice(idx).match(/-?\\d+(?:\\.\\d+)?/g);
-                if (nums && nums.length >= 2) {
-                    const v = parseFloat(nums[1]);
+                if (nums && nums.length > pref) {
+                    const v = parseFloat(nums[pref]);
                     if (!isNaN(v) && v >= lo && v <= hi) return {v: v, t: t};
                 }
             }
@@ -151,12 +160,21 @@ function readIndicator(name, lo, hi) {
     }
     return null;
 }
-return {chop: readIndicator('chop', 0, 100), cci: readIndicator('cci', -1000, 1000)};
+return {
+    chop: readIndicator('chop', 0, 100, 1),
+    cci: readIndicator('cci', -1000, 1000, 1),
+    adx: readIndicator('adx', 0, 100, 2)
+};
 """
 
 
 def needed_keys():
-    return ["chop"] + (["cci"] if USE_CCI else [])
+    keys = ["chop"]
+    if USE_CCI:
+        keys.append("cci")
+    if USE_ADX:
+        keys.append("adx")
+    return keys
 
 
 def scan_frames_for_indicators(driver, found, depth=0):
@@ -166,7 +184,7 @@ def scan_frames_for_indicators(driver, found, depth=0):
     except Exception:
         res = None
     if res:
-        for k in ("chop", "cci"):
+        for k in ("chop", "cci", "adx"):
             if found.get(k) is None and res.get(k) is not None:
                 found[k] = res[k]
 
@@ -195,11 +213,11 @@ def scan_frames_for_indicators(driver, found, depth=0):
 
 
 def check_tradingview_tab(driver):
-    """Switches to the chart tab, reads CHOP (and CCI), then switches back to DTrader."""
+    """Switches to the chart tab, reads CHOP (and CCI/ADX), then switches back to DTrader."""
     if not tab_handles["tv"] or not tab_handles["dtrader"]:
         return None
 
-    found = {"chop": None, "cci": None}
+    found = {"chop": None, "cci": None, "adx": None}
     with driver_lock:
         try:
             driver.switch_to.window(tab_handles["tv"])
@@ -222,7 +240,7 @@ def check_tradingview_tab(driver):
 
 
 def refresh_indicators():
-    """Refreshes CHOP and CCI from the chart tab every TV_CHECK_INTERVAL seconds."""
+    """Refreshes CHOP, CCI and ADX from the chart tab every TV_CHECK_INTERVAL seconds."""
     now = time.time()
     if now - tv_state["last_check"] > TV_CHECK_INTERVAL:
         tv_state["last_check"] = now
@@ -243,6 +261,13 @@ def refresh_indicators():
                 parts.append(f"CCI: {tv_state['cci']} ('{found['cci']['t']}')")
             else:
                 print("\n[!] CCI not found on chart tab (add the CCI indicator to the chart via Indicators)")
+
+        if USE_ADX:
+            if found.get("adx") is not None:
+                tv_state["adx"] = float(found["adx"]["v"])
+                parts.append(f"ADX: {tv_state['adx']} ('{found['adx']['t']}')")
+            else:
+                print("\n[!] ADX not found on chart tab (add the ADX indicator to the chart via Indicators)")
 
         if parts:
             print("\n[TV] Updated from chart tab -> " + " | ".join(parts))
@@ -446,7 +471,9 @@ print(f"Condition 5: Difference between 1st most and 2nd most appearing digits m
 print(f"Condition 6: CHOP must be between {CHOP_MIN} and {CHOP_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
 if USE_CCI:
     print(f"Condition 7: CCI must be between {CCI_MIN} and {CCI_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
-print(f"Condition 8: Incoming last digit must match target entry digits {TARGET_ENTRY_DIGITS}")
+if USE_ADX:
+    print(f"Condition 8: ADX must be between {ADX_MIN} and {ADX_MAX} (chart tab checked every {int(TV_CHECK_INTERVAL)}s)")
+print(f"Condition 9: Incoming last digit must match target entry digits {TARGET_ENTRY_DIGITS}")
 print("=" * 120)
 
 last_trade_time = 0
@@ -469,6 +496,7 @@ try:
             refresh_indicators()
             current_chop = tv_state["chop"]
             current_cci = tv_state["cci"]
+            current_adx = tv_state["adx"]
 
             if stats:
                 spot_str = f"Spot: {spot_price} (Last: {last_digit}, Prev/2nd-last: {prev_digit})" if spot_price else "Spot: Waiting for ticks..."
@@ -522,8 +550,18 @@ try:
                     cci_ok = True
                     cci_str = "CCI: off"
 
+                # ADX Rule Check (Condition 8) - must be inside ADX_MIN..ADX_MAX
+                if USE_ADX:
+                    adx_ok = (current_adx is not None) and (ADX_MIN <= current_adx <= ADX_MAX)
+                    adx_str = f"ADX: {current_adx} ({'Active' if adx_ok else 'Inactive'})"
+                else:
+                    adx_ok = True
+                    adx_str = "ADX: off"
+
+                indicators_ok = chop_ok and cci_ok and adx_ok
+
                 # Combined Strategy Trigger
-                strategy_triggered = rule_least_diff_met and rule_most_met and chop_ok and cci_ok
+                strategy_triggered = rule_least_diff_met and rule_most_met and indicators_ok
 
                 # Spot last digit matches entry digits (0 or 1) and 0, 1 are all below threshold
                 spot_matches_entry = (last_digit is not None) and all_below_threshold and (last_digit in TARGET_ENTRY_DIGITS)
@@ -561,7 +599,7 @@ try:
                     signal_msg = f"Entry digit {last_digit} hit but skipped (Digits 0, 1 must all be < {ENTRY_THRESHOLD}%) | {score_summary}"
                 elif strategy_triggered and spot_matches_entry:
                     signal_msg = f"Entry digit {last_digit} hit but 2nd-to-last digit is {prev_digit} (needs {PREV_DIGIT_MIN}-{PREV_DIGIT_MAX}) - skipped | {score_summary}"
-                elif (rule_least_diff_met and rule_most_met) and not (chop_ok and cci_ok):
+                elif (rule_least_diff_met and rule_most_met) and not indicators_ok:
                     reasons = []
                     if not chop_ok:
                         if current_chop is None:
@@ -573,14 +611,19 @@ try:
                             reasons.append("No CCI value read yet")
                         else:
                             reasons.append(f"CCI out of range ({current_cci} not in {CCI_MIN} to {CCI_MAX})")
+                    if not adx_ok:
+                        if current_adx is None:
+                            reasons.append("No ADX value read yet")
+                        else:
+                            reasons.append(f"ADX out of range ({current_adx} not in {ADX_MIN} to {ADX_MAX})")
                     signal_msg = f"Waiting... {'; '.join(reasons)} | {score_summary}"
                 elif strategy_triggered:
                     signal_msg = f"Strategy Ready (Least Diff: {diff_least_val:.1f}%, Most Diff: {diff_most_val:.1f}%)... Waiting for Digits 0, 1 < {ENTRY_THRESHOLD}% & Spot Match | {score_summary}"
                 else:
-                    signal_msg = f"Waiting... (Least Met: {rule_least_diff_met} | Most Met: {rule_most_met} | CHOP OK: {chop_ok} | CCI OK: {cci_ok}) | {score_summary}"
+                    signal_msg = f"Waiting... (Least Met: {rule_least_diff_met} | Most Met: {rule_most_met} | CHOP OK: {chop_ok} | CCI OK: {cci_ok} | ADX OK: {adx_ok}) | {score_summary}"
 
                 # Print each new tick cleanly on its own line
-                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_least_str}  ||  {diff_most_str}  ||  {chop_str}  ||  {cci_str}  ||  {signal_msg}")
+                print(f"{spot_str}  ||  {digits_output}  ||  {entry_str}  ||  {diff_least_str}  ||  {diff_most_str}  ||  {chop_str}  ||  {cci_str}  ||  {adx_str}  ||  {signal_msg}")
             else:
                 print(f"[!] {status}")
 
